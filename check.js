@@ -369,6 +369,40 @@ function runBias(){
   assert((plain.attrs[edu]||{}).level===3, '사전교육은 모든 세션에서 필수다 (일행 = 미수료)');
   assert(hack.bias[dev+':없음']===1 && hack.bias[dev+':있음']===-1, '없음=큰 조 · 있음=작은 조');
 
+  // 열 차례가 바뀌어도 유·불리가 살아 있는가 (열 번호로 들고 있으면 죽는다)
+  const mk = (headers, order)=>{
+    const rows = [headers];
+    for(let i=0;i<24;i++){
+      const cell = { '이름': NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),
+                     '성별': i%2?'남':'여', '코딩': (i%3)?'O':'X', '사전교육': i%4?'수료':'미수료' };
+      rows.push(order.map(k=>cell[k]));
+    }
+    return rows.map(r=>r.join('\t')).join('\n');
+  };
+  const A = ['이름','성별','코딩','사전교육'];
+  const B = ['이름','코딩','사전교육','성별'];      // 코딩이 2번 → 1번으로 옮겨간다
+  C.S = C.blankState();
+  C.takeTable(mk(A, A));
+  C.takeTable(mk(B, B));                            // 명단을 다시 붙여넣는다
+  const st4 = C.S;
+  const h4 = st4.sessions.find(x=>x.name==='해커톤');
+  const ciX = st4.headers.indexOf('코딩');
+  assert(h4.bias[ciX+':X']===1, '열 차례가 바뀌어도 유·불리가 새 열 번호를 따라간다');
+  const live = Object.keys(h4.bias).every(k=>{
+    const q = k.indexOf(':'), ci = +k.slice(0,q);
+    return st4.roles[ci]==='attr' && C.colValues(ci).indexOf(k.slice(q+1))>=0;
+  });
+  assert(live, '죽은 키가 남아 있지 않다');
+  const isX4 = (n)=> C.valOf(C.PEOPLE[C.PIDX.get(n)], ciX)==='X';
+  const nX = C.attendees(h4).filter(isX4).length;
+  const per = h4.teams.map(g=>({ L:g.length, k:g.filter(isX4).length }));
+  assert(nX > 0 && per.reduce((a,r)=>a+r.k,0)===nX, 'X 인 사람이 배정표에서 빠짐없이 세어진다 ('+nX+'명)');
+  const L4 = per.map(r=>r.L), mx4 = Math.max.apply(null,L4), mn4 = Math.min.apply(null,L4);
+  const mean = (a)=> a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0;
+  const aBig = mean(per.filter(r=>r.L===mx4).map(r=>r.k)), aSml = mean(per.filter(r=>r.L===mn4).map(r=>r.k));
+  assert(mx4===mn4 || aBig >= aSml,
+    '다시 붙여넣은 뒤에도 X 가 큰 조 쪽에 더 많다 ('+mx4+'명 조 '+aBig.toFixed(1)+' · '+mn4+'명 조 '+aSml.toFixed(1)+')');
+
   // 시트가 O / X 로 적혀 있어도 알아본다
   const marks = [['O','X'], ['○','×'], ['가능','불가'], ['수료','미수료']];
   for(const [yes,no] of marks){

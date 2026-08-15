@@ -442,7 +442,7 @@ function parseTable(text){
 }
 
 const RE_NAME  = /이름|성명|성함|참가자|참석자|닉네임|별명|name/i;
-const RE_PARTY = /일행|동행|동반|같이|함께|그룹|group|party|companion/i;
+const RE_PARTY = /일행|동행|동반|동료|지인|가족|부부|커플|같이|함께|그룹|조원|팀원|group|party|companion|guest|with/i;
 const RE_GEND  = /성별|성$|gender|sex/i;
 
 /* ═══ 상태 ═══
@@ -450,12 +450,15 @@ const RE_GEND  = /성별|성$|gender|sex/i;
 const LV_W   = [0, 1, 4, 20];        // 무시 · 보통 · 중요 · 필수
 const LV_NM  = ['무시','보통','중요','필수'];
 const MEET_W = [0, 1, 3, 10];
-const PARTY_PEN = 400;
-/* 조 크기로 메우기 — 두 항이 짝이다.
-   BIAS_W  (선형)  불리한 사람을 손이 많은 조 쪽으로 민다.
-   BIAS_GUARD (이차) 조마다 비례 몫에서 벗어나는 것을 벌한다.
-   가드가 더 무거워야 한다. 아니면 불리한 사람이 큰 조에 다 몰린다. */
-const BIAS_W = 6, BIAS_GUARD = 8;
+const PARTY_PEN = 2000;
+/* 조 크기로 메우기.
+   선형으로 밀고 이차로 막는 짝은 쓰지 않는다 — 같은 열에 걸린 '필수' 분산(20)이
+   비례 쪽으로 더 세게 당겨서 선형 항이 묻힌다. 대신 **목표 자체를 기울인다**:
+   조의 몫을 인원 L 이 아니라 L + TILT·(L − 평균) 로 잡는다.
+   이차라서 몰림은 여전히 막히고, 목표가 큰 조 쪽으로 가 있으니 방향은 확실하다.
+   29명·6조(5,5,5,5,5,4)에서 X 16명이면 5인조 2.9명 · 4인조 1.3명이 목표다
+   (비례로만 두면 2.8 · 2.2 라 차이가 거의 없다). */
+const BIAS_W = 20, BIAS_TILT = 2;
 
 let S = blankState();
 function blankState(){
@@ -595,8 +598,12 @@ function buildCtx(names, meet, N, opt){
     }
     if(tot) biasVals.push({ mem, tot, ci, val });
   }
+  const biasCols = new Set(biasVals.map(b=>b.ci));
   const attrs = [];
   for(const spec of (opt.attrs||[])){
+    // 유·불리를 정한 열은 아래 기울인 목표가 맡는다.
+    // 여기서 비례로 또 당기면 둘이 싸워서 기울기가 묻힌다.
+    if(biasCols.has(spec.ci)) continue;
     const vs = []; const map = new Map();
     const v = new Int32Array(n);
     for(let i=0;i<n;i++){
@@ -610,7 +617,8 @@ function buildCtx(names, meet, N, opt){
                  vals:vs, buf:new Array(vs.length).fill(0) });
   }
   const hasBias = bias.some(v=>v!==0);
-  return { n, M, party, attrs, seats, bias, biasVals, wMeet: opt.wMeet,
+  const avgL = n / Math.max(1, opt.nTeams || 1);
+  return { n, M, party, attrs, seats, bias, biasVals, avgL, wMeet: opt.wMeet,
            // 조 크기를 유·불리로 정하기로 했으면 기회 균등은 그 세션에서 물러선다.
            // 둘 다 조 크기를 밀어대면 서로 상쇄한다.
            wFair: opt.wFair !== undefined ? opt.wFair : (hasBias ? 0 : 0.5),
@@ -624,15 +632,17 @@ function teamCost(ctx, mem){
     for(let a=0;a<L;a++){ const t = ctx.seats[mem[a]] + e; c += ctx.wFair * t * t; }
   }
   if(ctx.wBias){
-    let B = 0;
-    for(let a=0;a<L;a++) B += ctx.bias[mem[a]];
-    c -= ctx.wBias * B * L;                     // 불리한 사람은 손이 많은 조로
-    for(let k=0;k<ctx.biasVals.length;k++){     // 그래도 값마다 비례 몫을 넘지 못하게
+    // 목표를 조 크기 쪽으로 기울인다. 큰 조는 몫보다 더, 작은 조는 덜 받는다.
+    // 가중치의 합은 n 이라 목표의 합은 언제나 tot 이다.
+    const w = L + BIAS_TILT * (L - ctx.avgL);
+    for(let k=0;k<ctx.biasVals.length;k++){
       const bv = ctx.biasVals[k];
       let g = 0;
       for(let a=0;a<L;a++) g += bv.mem[mem[a]];
-      const t = g - bv.tot * L / n;
-      c += BIAS_GUARD * t * t;
+      let tgt = bv.tot * w / n;
+      if(tgt < 0) tgt = 0; else if(tgt > L) tgt = L;
+      const t = g - tgt;
+      c += ctx.wBias * t * t;                  // 이차라 한 조에 몰리지도 않는다
     }
   }
   for(let a=0;a<L;a++){
@@ -707,7 +717,8 @@ function sessCtxOpts(sess, names){
     if(!cfg || !cfg.level) continue;
     specs.push({ ci, w: LV_W[cfg.level], mode: cfg.mode || 'spread' });
   }
-  return { attrs: specs, wMeet: MEET_W[sess.meet], bias: sess.bias || null };
+  return { attrs: specs, wMeet: MEET_W[sess.meet], bias: sess.bias || null,
+           nTeams: teamSizes(names.length, sess).length };
 }
 /* 그 사람의 유·불리 값 (+1 불리 · -1 유리 · 0 아무것도 아님) */
 function biasOf(sess, name){
@@ -835,7 +846,8 @@ function computeRooms(){
     const sizes = pairSizes(names.length, R.odd);
     if(!sizes.length) continue;
     // 방은 모두 2인실이라 기회를 따질 것이 없다 — 안 만난 사이인지만 본다
-    const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:10, wFair:0, noParty: R.allowParty ? false : true });
+    const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:10, wFair:0, nTeams: sizes.length,
+                                            noParty: R.allowParty ? false : true });
     const best = solve(ctx, sizes, (R.seed|0) + gi*31337, 6);
     for(const grp of best.teams) out.push({ who: grp.map(i=>names[i]), fixed:false, gender:g });
   }
@@ -888,7 +900,19 @@ function diagnose(){
         if(pa && pb && pa.party && pa.party===pb.party) rec.party++;
       }
     }
-    if(rec.party) d.violations.push(s.name + ' — 일행 ' + rec.party + '쌍이 같은 조입니다');
+    if(rec.party){
+      // 묶음이 조 개수보다 크면 애초에 못 가른다 — 배정 탓이 아니라 산수다
+      const gs = new Map();
+      for(const nm of names){
+        const p = PEOPLE[PIDX.get(nm)];
+        if(p && p.party) gs.set(p.party, (gs.get(p.party)||0) + 1);
+      }
+      const big = gs.size ? Math.max.apply(null, Array.from(gs.values())) : 0;
+      d.violations.push(s.name + ' — 일행 ' + rec.party + '쌍이 같은 조입니다'
+        + (big > s.teams.length
+            ? ' (일행 한 묶음이 ' + big + '명인데 조는 ' + s.teams.length + '개뿐이라 다 가를 수 없습니다)'
+            : ''));
+    }
     // 조 크기로 메우다 불리한 사람이 한 조에 몰리지 않았나 — 값마다 따로 본다
     for(const mk of biasMarks(s)){
       const tot = countVal(names, mk.ci, mk.val);
@@ -906,16 +930,28 @@ function diagnose(){
       const lvl = cfg ? cfg.level : 0;
       const vals = new Map();
       for(const nm of names){ const v = valOf(PEOPLE[PIDX.get(nm)], ci); vals.set(v,(vals.get(v)||0)+1); }
-      let maxDev = 0;
+      // 유·불리를 정한 값은 목표가 조 크기 쪽으로 기울어 있다.
+      // 비례로 재면 일부러 기울인 것이 어긋난 것처럼 보인다.
+      const bias = s.bias || {};
+      const avgL = names.length / Math.max(1, s.teams.length);
+      let maxDev = 0, tilted = false;
       for(const g of s.teams){
         const cnt = new Map();
         for(const nm of g){ const v = valOf(PEOPLE[PIDX.get(nm)], ci); cnt.set(v,(cnt.get(v)||0)+1); }
         for(const [v,tot] of vals){
-          const ideal = tot * g.length / Math.max(1,names.length);
+          let ideal;
+          if(bias[ci+':'+v] > 0){
+            tilted = true;
+            ideal = tot * (g.length + BIAS_TILT*(g.length - avgL)) / Math.max(1,names.length);
+            if(ideal < 0) ideal = 0;
+          } else {
+            ideal = tot * g.length / Math.max(1,names.length);
+          }
           maxDev = Math.max(maxDev, Math.abs((cnt.get(v)||0) - ideal));
         }
       }
-      rec.attrs.push({ ci, name:S.headers[ci], level:lvl, mode:(cfg&&cfg.mode)||'spread', dev:maxDev });
+      rec.attrs.push({ ci, name:S.headers[ci], level:lvl, mode:(cfg&&cfg.mode)||'spread',
+                       dev:maxDev, tilted });
     }
     d.sessions.push(rec);
   }
@@ -986,6 +1022,31 @@ function renderRoster(){
       +  '<select class="pick" id="sel-gender"><option value="-1">없음</option>'
       +  ac.map(ci=>'<option value="'+ci+'"'+(S.genderCol===ci?' selected':'')+'>'+esc(S.headers[ci])+'</option>').join('')
       +  '</select><span class="note">숙박 방을 가를 때만 씁니다</span></div>';
+    // 일행이 제대로 잡혔는지 눈으로 보이게 한다 — 안 잡히면 조가 그냥 섞인다
+    const pc = S.roles.indexOf('party');
+    h += '<div class="row" style="margin-top:8px"><span class="lbl">일행</span>';
+    if(pc < 0){
+      h += '<span class="pill bad">열이 정해지지 않았습니다 — 같은 조에 들어갑니다</span>'
+        +  '<span class="note">일행 열을 위에서 골라 주세요. 같은 값을 적은 사람끼리 한 묶음입니다.</span>';
+    } else {
+      const groups = new Map();
+      for(const p of PEOPLE){
+        if(S.out[p.name] || !p.party) continue;
+        groups.set(p.party, (groups.get(p.party)||0) + 1);
+      }
+      const sz = Array.from(groups.values()).filter(v=>v>1);
+      const solo = Array.from(groups.entries()).filter(([,v])=>v===1).length;
+      if(!sz.length){
+        h += '<span class="pill warn">묶음이 없습니다</span>'
+          +  '<span class="note">'+esc(S.headers[pc])+' 열에 값이 같은 사람이 없습니다'
+          +  (solo?' (혼자뿐인 값 '+solo+'개)':'')+'</span>';
+      } else {
+        const big = Math.max.apply(null, sz);
+        h += '<span class="pill ok">'+sz.length+'묶음 · '+sz.reduce((a,b)=>a+b,0)+'명</span>'
+          +  '<span class="note">가장 큰 묶음 '+big+'명 · '+esc(S.headers[pc])+' 열 기준</span>';
+      }
+    }
+    h += '</div>';
     if(S.raw){
       h += '<div class="row" style="margin-top:8px"><span class="lbl">첫 줄</span>'
         +  '<span class="note">'+(S.hasHeader?'열 이름으로 읽었습니다':'사람으로 읽었습니다')+'</span>'
@@ -1467,9 +1528,10 @@ function renderDiag(){
     for(const a of s.attrs){
       const ok = a.dev < 0.75, mid2 = a.dev < 1.5;
       const p = a.level ? (ok?'ok':(mid2?'warn':'bad')) : '';
-      h += '<td>' + (a.level===0
+      h += '<td>' + (a.level===0 && !a.tilted
             ? '<span class="note">—</span>'
-            : '<span class="pill '+p+'">'+(a.mode==='cluster'?'모음':'')+'<span class="v">±'+a.dev.toFixed(1)+'</span></span>')
+            : '<span class="pill '+p+'">'+(a.mode==='cluster'?'모음':'')+(a.tilted?'조 크기 ':'')
+              +'<span class="v">±'+a.dev.toFixed(1)+'</span></span>')
         + '</td>';
     }
     h += '</tr>';

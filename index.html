@@ -211,6 +211,7 @@ select.pick{background:var(--raise); border:1px solid var(--line2); border-radiu
   padding:3px 10px; border-bottom:1px solid var(--line); letter-spacing:.01em;
 }
 .team .bmark b{font-family:var(--mono); font-weight:700}
+.team .bmark i{font-style:normal; opacity:.65; font-size:9px; padding-right:1px}
 .team ul{list-style:none; margin:0; padding:6px 10px 8px}
 .team li{display:flex; align-items:baseline; gap:6px; padding:1.5px 0; font-size:13.5px}
 .team li .mk{font-family:var(--mono); font-size:10.5px; padding:0 4px; border-radius:3px; letter-spacing:.02em}
@@ -459,6 +460,11 @@ const PARTY_PEN = 2000;
    29명·6조(5,5,5,5,5,4)에서 X 16명이면 5인조 2.9명 · 4인조 1.3명이 목표다
    (비례로만 두면 2.8 · 2.2 라 차이가 거의 없다). */
 const BIAS_W = 20, BIAS_TILT = 2;
+/* 불리함이 누적되지 않게. 조 크기로 메우는 것만으로는 모자란다 —
+   1 이 둘인데 3 이 하나도 없는 조가 나올 수 있고, 그 조의 1 은
+   큰 조에 갔다는 것 말고는 아무 도움을 못 받는다.
+   불리한 사람이 있는 조에는 유리한 사람이 적어도 하나 있어야 한다. */
+const HELP_PEN = 60;
 
 let S = blankState();
 function blankState(){
@@ -585,20 +591,25 @@ function buildCtx(names, meet, N, opt){
     }
     return b;
   });
-  // 불리하다고 표시한 값은 *값마다* 비례 몫을 지킨다.
-  // 합계에만 가드를 걸면 한 값이 몰리고 다른 값이 그것을 상쇄해 통과한다.
+  // 유·불리를 정한 열은 그 열의 **모든 값**에 목표를 준다.
+  // +1 값만 잡으면 나머지가 자유로워진다 — 1/2/3 처럼 세 단계일 때
+  // 1 만 흩어지고 2 와 3 이 뭉쳐 버린다. 부호 0 은 그냥 비례 몫이다.
+  const biasCols = new Set();
+  for(const k of bkeys) biasCols.add(+k.slice(0, k.indexOf(':')));
   const biasVals = [];
-  for(const k of bkeys){
-    if(opt.bias[k] <= 0) continue;
-    const q = k.indexOf(':'), ci = +k.slice(0,q), val = k.slice(q+1);
-    const mem = new Int32Array(n);
-    let tot = 0;
+  for(const ci of biasCols){
+    const seen = new Map();
     for(let i=0;i<n;i++){
-      if(valOf(PEOPLE[PIDX.get(names[i])], ci) === val){ mem[i] = 1; tot++; }
+      const v = valOf(PEOPLE[PIDX.get(names[i])], ci);
+      if(!seen.has(v)) seen.set(v, []);
+      seen.get(v).push(i);
     }
-    if(tot) biasVals.push({ mem, tot, ci, val });
+    for(const [val, idxs] of seen){
+      const mem = new Int32Array(n);
+      for(const i of idxs) mem[i] = 1;
+      biasVals.push({ mem, tot: idxs.length, ci, val, sign: (opt.bias||{})[ci+':'+val] || 0 });
+    }
   }
-  const biasCols = new Set(biasVals.map(b=>b.ci));
   const attrs = [];
   for(const spec of (opt.attrs||[])){
     // 유·불리를 정한 열은 아래 기울인 목표가 맡는다.
@@ -616,13 +627,15 @@ function buildCtx(names, meet, N, opt){
     attrs.push({ ci:spec.ci, w:spec.w, mode:spec.mode||'spread', v, tot, nv:vs.length,
                  vals:vs, buf:new Array(vs.length).fill(0) });
   }
-  const hasBias = bias.some(v=>v!==0);
+  const hasBias = biasCols.size > 0;
   const avgL = n / Math.max(1, opt.nTeams || 1);
   return { n, M, party, attrs, seats, bias, biasVals, avgL, wMeet: opt.wMeet,
            // 조 크기를 유·불리로 정하기로 했으면 기회 균등은 그 세션에서 물러선다.
            // 둘 다 조 크기를 밀어대면 서로 상쇄한다.
            wFair: opt.wFair !== undefined ? opt.wFair : (hasBias ? 0 : 0.5),
            wBias: hasBias ? BIAS_W : 0,
+           helpPen: (hasBias && biasVals.some(b=>b.sign<0 && b.tot>0)
+                             && biasVals.some(b=>b.sign>0 && b.tot>0)) ? HELP_PEN : 0,
            partyPen: opt.noParty===false ? 0 : PARTY_PEN };
 }
 function teamCost(ctx, mem){
@@ -632,18 +645,23 @@ function teamCost(ctx, mem){
     for(let a=0;a<L;a++){ const t = ctx.seats[mem[a]] + e; c += ctx.wFair * t * t; }
   }
   if(ctx.wBias){
-    // 목표를 조 크기 쪽으로 기울인다. 큰 조는 몫보다 더, 작은 조는 덜 받는다.
-    // 가중치의 합은 n 이라 목표의 합은 언제나 tot 이다.
-    const w = L + BIAS_TILT * (L - ctx.avgL);
+    // 목표를 조 크기 쪽으로 기울인다. 불리한 값(+1)은 큰 조가 몫보다 더 받고,
+    // 유리한 값(-1)은 작은 조가 더 받는다. 부호가 0 이면 그냥 비례다.
+    // 어느 부호든 가중치의 합은 n 이라 목표의 합은 언제나 tot 이다.
+    const d = L - ctx.avgL;
+    let nDis = 0, nAdv = 0;
     for(let k=0;k<ctx.biasVals.length;k++){
       const bv = ctx.biasVals[k];
       let g = 0;
       for(let a=0;a<L;a++) g += bv.mem[mem[a]];
-      let tgt = bv.tot * w / n;
+      let tgt = bv.tot * (L + bv.sign * BIAS_TILT * d) / n;
       if(tgt < 0) tgt = 0; else if(tgt > L) tgt = L;
       const t = g - tgt;
       c += ctx.wBias * t * t;                  // 이차라 한 조에 몰리지도 않는다
+      if(bv.sign > 0) nDis += g; else if(bv.sign < 0) nAdv += g;
     }
+    // 도울 사람 없이 불리한 사람만 모인 조를 막는다
+    if(ctx.helpPen && nDis > 0 && nAdv === 0) c += ctx.helpPen;
   }
   for(let a=0;a<L;a++){
     const i = mem[a];
@@ -732,16 +750,17 @@ function biasOf(sess, name){
   return v;
 }
 const hasBias = (sess)=> !!(sess.bias && Object.keys(sess.bias).some(k=>sess.bias[k]));
-/* 불리하다고 표시한 (열, 값) 목록 */
+/* 유·불리를 정한 (열, 값) 목록 — 불리(+1)가 앞, 유리(-1)가 뒤 */
 function biasMarks(sess){
   const out = [];
   if(!sess.bias) return out;
   for(const k in sess.bias){
-    if(sess.bias[k] <= 0) continue;
+    const sg = sess.bias[k];
+    if(!sg) continue;
     const q = k.indexOf(':');
-    out.push({ ci:+k.slice(0,q), val:k.slice(q+1) });
+    out.push({ ci:+k.slice(0,q), val:k.slice(q+1), sign:sg });
   }
-  return out;
+  return out.sort((a,b)=> b.sign - a.sign || (a.val < b.val ? -1 : 1));
 }
 /* 그 조 안에 그 값을 가진 사람이 몇인가 */
 const countVal = (team, ci, val)=>
@@ -1183,9 +1202,29 @@ function biasGuess(v){
   const t = String(v).trim();
   if(/^[xX×✕✗✘]$/.test(t)) return 1;
   if(/^[oO○◯●⭕]$/.test(t)) return -1;
+  if(/^[?？]+$/.test(t)) return 1;   // 모르면 불리 쪽으로 — 틀려도 손이 많은 조라 손해가 없다
   if(/없|미수료|미이수|안\s*받|무경험|불가|초보|^(no|n)$/i.test(t)) return 1;
   if(/있|수료|이수|완료|가능|경험|^(yes|y)$/i.test(t)) return -1;
   return 0;
+}
+/* 값이 대체로 숫자면 척도로 본다: 제일 낮은 값이 불리, 제일 높은 값이 유리,
+   가운데는 0(비례). 1·2·3 같은 실력 등급이 여기 걸린다. */
+const NUMV = /^-?\d+(\.\d+)?$/;
+function scaleBias(vals){
+  const nums = vals.filter(v=>NUMV.test(v)).map(Number);
+  if(nums.length < 2 || nums.length < vals.length - 2) return null;
+  const lo = Math.min.apply(null, nums), hi = Math.max.apply(null, nums);
+  if(lo === hi) return null;
+  const out = {};
+  for(const v of vals){
+    if(NUMV.test(v)){
+      const x = Number(v);
+      out[v] = x <= lo ? 1 : (x >= hi ? -1 : 0);
+    } else {
+      out[v] = biasGuess(v);          // O·? 처럼 숫자가 아닌 나머지
+    }
+  }
+  return out;
 }
 function autoDefaults(){
   for(const s of S.sessions){
@@ -1202,8 +1241,10 @@ function autoDefaults(){
       S.headers.forEach((h,ci)=>{
         if(S.roles[ci]!=='attr') return;
         if(!RE_DEV.test(h) && !RE_EDU.test(h)) return;
-        for(const v of colValues(ci)){
-          const g = biasGuess(v);
+        const vals = colValues(ci);
+        const sc = scaleBias(vals);
+        for(const v of vals){
+          const g = sc ? sc[v] : biasGuess(v);
           if(g) b[ci+':'+v] = g;
         }
       });
@@ -1430,7 +1471,8 @@ function renderResult(){
       h += '<div class="team"><h4><span>'+(i+1)+'조</span><span class="cnt">'+g.length+'명</span></h4>'
         // 불리하다고 표시한 값이 조마다 몇인지 드러낸다 — 몰렸으면 여기서 보인다
         +  (marks.length ? '<div class="bmark">'
-             + marks.map(m=>esc(m.val)+' <b>'+countVal(g, m.ci, m.val)+'</b>').join(' · ')
+             + marks.map(m=>'<i>'+(m.sign>0?'▲':'▼')+'</i>'+esc(m.val)
+                 +' <b>'+countVal(g, m.ci, m.val)+'</b>').join(' · ')
              + '</div>' : '')
         +  '<ul>'
         +  g.map(n=>'<li><span>'+esc(n)+'</span>'+markFor(n,hi)+'</li>').join('')

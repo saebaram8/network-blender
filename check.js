@@ -444,6 +444,53 @@ function runBias(){
     'X 는 큰 조 쪽에 더 많다 ('+mx+'명 조 평균 '+avg(bigT).toFixed(1)+' · '+mn+'명 조 평균 '+avg(smallT).toFixed(1)+')');
 }
 
+/* ── 1·2·3 실력 등급 (+ O, ?) ── */
+function runScale(){
+  console.log('\n\x1b[1m실력 등급 1·2·3 과 O·?\x1b[0m');
+  const mkRows = (withOQ)=>{
+    const rows = [['이름','성별','개발경험']];
+    const pool = withOQ ? ['1','2','3','1','2','3','O','?','2','3'] : ['1','2','3','1','2','3','2','3','1','2'];
+    for(let i=0;i<29;i++) rows.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),
+      i%2?'남':'여', pool[i%pool.length]]);
+    return rows.map(r=>r.join('\t')).join('\n');
+  };
+  C.S = C.blankState();
+  C.takeTable(mkRows(true));
+  const st = C.S, ci = st.headers.indexOf('개발경험');
+  const h = st.sessions.find(x=>x.name==='해커톤');
+  assert(h.bias[ci+':1']===1 && h.bias[ci+':3']===-1, '1=큰 조 · 3=작은 조');
+  assert(!(ci+':2' in h.bias), '2 는 가운데라 기울이지 않는다');
+  assert(h.bias[ci+':?']===1, '? 는 불리 쪽으로 본다');
+
+  st.sessions = [h]; h.size = 5;
+  C.recompute();
+  const val = (n)=> C.valOf(C.PEOPLE[C.PIDX.get(n)], ci);
+  const names = C.attendees(h);
+  const per = h.teams.map(g=>({ L:g.length, c:{} }));
+  h.teams.forEach((g,i)=>{ for(const n of g){ const v=val(n); per[i].c[v]=(per[i].c[v]||0)+1; } });
+  const tot = {}; for(const n of names){ const v=val(n); tot[v]=(tot[v]||0)+1; }
+  const Ls = per.map(r=>r.L), mx = Math.max.apply(null,Ls), mn = Math.min.apply(null,Ls);
+  const avgFor = (v,L)=>{ const rows = per.filter(r=>r.L===L); return rows.reduce((a,r)=>a+(r.c[v]||0),0)/rows.length; };
+
+  // 가운데 값(2)과 높은 값(3)이 한 조에 뭉치지 않았나 — 비례 몫에서 크게 안 벗어나야 한다
+  let worst = 0, who = '';
+  for(const v of Object.keys(tot)){
+    const sign = (h.bias[ci+':'+v]||0);
+    for(const r of per){
+      const w = r.L + sign*2*(names.length/per.length ? r.L - names.length/per.length : 0);
+      const ideal = tot[v] * (r.L + sign*2*(r.L - names.length/per.length)) / names.length;
+      const dev = Math.abs((r.c[v]||0) - Math.max(0, ideal));
+      if(dev > worst){ worst = dev; who = v; }
+    }
+  }
+  assert(worst <= 1.35, '어떤 값도 한 조에 뭉치지 않는다 (가장 큰 어긋남 '+worst.toFixed(2)+'명, 값 "'+who+'")');
+  if(mx!==mn){
+    assert(avgFor('1',mx) >= avgFor('1',mn), '1 은 큰 조 쪽에 더 많다 ('+avgFor('1',mx).toFixed(1)+' 대 '+avgFor('1',mn).toFixed(1)+')');
+    assert(avgFor('3',mx) <= avgFor('3',mn) + 0.01, '3 은 작은 조 쪽에 더 많다 ('+avgFor('3',mx).toFixed(1)+' 대 '+avgFor('3',mn).toFixed(1)+')');
+  }
+  console.log('    조별 구성: ' + per.map(r=>r.L+'명 '+Object.keys(tot).sort().map(v=>v+(r.c[v]||0)).join('')).join('  '));
+}
+
 /* ── 돌리기 ── */
 const N = Math.max(1, parseInt(process.argv[2] || '6', 10));
 console.log('\x1b[1m만남 배분기 검사\x1b[0m  — ' + N + '판\n' + '─'.repeat(52));
@@ -467,6 +514,7 @@ runLock();
 runTSV();
 runOdd();
 runBias();
+runScale();
 
 console.log('\n' + '─'.repeat(52));
 const slow = Math.max.apply(null, times);

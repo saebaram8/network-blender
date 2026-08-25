@@ -491,6 +491,56 @@ function runScale(){
   console.log('    조별 구성: ' + per.map(r=>r.L+'명 '+Object.keys(tot).sort().map(v=>v+(r.c[v]||0)).join('')).join('  '));
 }
 
+/* ── 취침 방: 만난 사이·같은 소속·개인 선호 ── */
+function runRooms(){
+  console.log('\n\x1b[1m취침 방 — 만난 사이·소속·개인 선호\x1b[0m');
+  C.S = C.blankState();
+  C.takeTable(makeRoster(12, 16, 0));
+  const st = C.S;
+  st.sessions.forEach(s=>s.size = 5);
+  st.rooms.guardNames = ['소속'];
+  C.recompute();
+
+  const nm = C.activeNames();
+  const roomOf = new Map();
+  st.rooms.list.forEach((r,i)=> r.who.forEach(n=> roomOf.set(n,i)));
+  const gi = st.headers.indexOf('소속');
+  let sameOrg = 0, metPair = 0;
+  for(const r of st.rooms.list){
+    for(let a=0;a<r.who.length;a++) for(let b=a+1;b<r.who.length;b++){
+      if(C.valOf(C.PEOPLE[C.PIDX.get(r.who[a])], gi) === C.valOf(C.PEOPLE[C.PIDX.get(r.who[b])], gi)) sameOrg++;
+      const i = C.PIDX.get(r.who[a]), j = C.PIDX.get(r.who[b]);
+      if(C.MEET[i*C.NP+j] > 1) metPair++;      // 방 자체가 1 을 더하므로 2 이상이 '전에 만났다'
+    }
+  }
+  assert(sameOrg===0, '같은 소속끼리 한 방에 두지 않았다 ('+sameOrg+'쌍)');
+  assert(metPair===0, '이미 만난 사이를 한 방에 두지 않았다 ('+metPair+'쌍)');
+
+  // 개인 선호 — 싫다는 짝과 좋다는 짝
+  const men = nm.filter(n=>C.valOf(C.PEOPLE[C.PIDX.get(n)], st.genderCol)==='남');
+  const A = men[0], B = men[1], X = men[2], Y = men[3];
+  st.rooms.avoid  = [[A, B]];
+  st.rooms.prefer = [[X, Y]];
+  C.recompute();
+  const r2 = new Map();
+  st.rooms.list.forEach((r,i)=> r.who.forEach(n=> r2.set(n,i)));
+  assert(r2.get(A) !== r2.get(B), '"같은 방 안 됨" 을 지켰다 ('+A+' · '+B+')');
+  assert(r2.get(X) === r2.get(Y), '"되도록 같은 방" 을 지켰다 ('+X+' · '+Y+')');
+
+  // 지킬 열은 이름으로 들고 있으니 열 차례가 바뀌어도 살아 있어야 한다
+  const rows = makeRoster(12, 16, 0).split('\n').map(l=>l.split('\t'));
+  const ord = [0,4,5,1,2,3];                    // 소속이 2번 → 4번으로 옮겨간다
+  C.takeTable(rows.map(r=>ord.map(k=>r[k]).join('\t')).join('\n'));
+  assert(C.S.rooms.guardNames.indexOf('소속')>=0 && C.S.headers.indexOf('소속')>=0,
+    '열 차례가 바뀌어도 지킬 열이 살아 있다 (지금 '+C.S.headers.indexOf('소속')+'번)');
+  C.recompute();
+  const gi2 = C.S.headers.indexOf('소속');
+  let same2 = 0;
+  for(const r of C.S.rooms.list) for(let a=0;a<r.who.length;a++) for(let b=a+1;b<r.who.length;b++)
+    if(C.valOf(C.PEOPLE[C.PIDX.get(r.who[a])], gi2) === C.valOf(C.PEOPLE[C.PIDX.get(r.who[b])], gi2)) same2++;
+  assert(same2===0, '열이 옮겨간 뒤에도 같은 소속이 한 방에 없다 ('+same2+'쌍)');
+}
+
 /* ── 돌리기 ── */
 const N = Math.max(1, parseInt(process.argv[2] || '6', 10));
 console.log('\x1b[1m만남 배분기 검사\x1b[0m  — ' + N + '판\n' + '─'.repeat(52));
@@ -515,6 +565,7 @@ runTSV();
 runOdd();
 runBias();
 runScale();
+runRooms();
 
 console.log('\n' + '─'.repeat(52));
 const slow = Math.max.apply(null, times);

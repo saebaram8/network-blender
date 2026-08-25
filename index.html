@@ -465,6 +465,11 @@ const BIAS_W = 20, BIAS_TILT = 2;
    큰 조에 갔다는 것 말고는 아무 도움을 못 받는다.
    불리한 사람이 있는 조에는 유리한 사람이 적어도 하나 있어야 한다. */
 const HELP_PEN = 60;
+/* 방은 둘뿐이라 한 번 잘못 묶으면 밤새 그대로다.
+   이미 만난 사이도, 같은 소속·설계팀도 사실상 금지로 둔다. */
+const GUARD_PEN = 800, ROOM_MEET = 400;
+/* 사람이 직접 고른 짝. 싫다는 것은 사실상 금지, 좋다는 것은 되도록. */
+const AVOID_PEN = 3000, PREFER_BONUS = 600;
 
 let S = blankState();
 function blankState(){
@@ -475,7 +480,7 @@ function blankState(){
     out: {},                 // 아예 안 오는 사람
     genderCol: -1,
     sessions: [],
-    rooms: { fixed: [], odd: 'single', allowParty: false, absent: {}, count: true, seed: 7, list: null },
+    rooms: { fixed: [], odd: 'single', allowParty: false, absent: {}, count: true, seed: 7, list: null, guardNames: [], avoid: [], prefer: [] },
     seedBase: 20250814
   };
 }
@@ -575,6 +580,16 @@ function buildCtx(names, meet, N, opt){
     M[a*n+b]=v; M[b*n+a]=v;
   }
   const party = names.map(nm=> PEOPLE[PIDX.get(nm)].party || '');
+  // 같은 값이면 한 방에 두지 않을 열들 (소속·설계팀 같은 것)
+  const guards = (opt.guards || []).map(ci=>{
+    const idOf = new Map();
+    return names.map(nm=>{
+      const v = valOf(PEOPLE[PIDX.get(nm)], ci);
+      if(v === '—') return -1;
+      if(!idOf.has(v)) idOf.set(v, idOf.size);
+      return idOf.get(v);
+    });
+  });
   // 지금까지 같은 조에 앉은 자리 수 — 이 세션 몫은 빠져 있다.
   // 적게 앉은 사람을 큰 조로 보내 만날 기회를 고르게 한다.
   const seats = names.map(nm=> SEATS ? SEATS[PIDX.get(nm)] : 0);
@@ -629,7 +644,18 @@ function buildCtx(names, meet, N, opt){
   }
   const hasBias = biasCols.size > 0;
   const avgL = n / Math.max(1, opt.nTeams || 1);
-  return { n, M, party, attrs, seats, bias, biasVals, avgL, wMeet: opt.wMeet,
+  // 사람이 고른 짝: 이름으로 받아 이 자리의 번호로 바꾼다
+  let pairW = null;
+  if(opt.pairs && opt.pairs.length){
+    const li = new Map(names.map((nm,i)=>[nm,i]));
+    for(const pr of opt.pairs){
+      const a = li.get(pr.a), b = li.get(pr.b);
+      if(a==null || b==null || a===b) continue;   // 한쪽이 이 무리에 없으면 넘어간다
+      if(!pairW) pairW = new Float64Array(n*n);
+      pairW[a*n+b] += pr.w; pairW[b*n+a] += pr.w;
+    }
+  }
+  return { n, M, party, attrs, seats, bias, biasVals, avgL, guards, pairW, wMeet: opt.wMeet,
            // 조 크기를 유·불리로 정하기로 했으면 기회 균등은 그 세션에서 물러선다.
            // 둘 다 조 크기를 밀어대면 서로 상쇄한다.
            wFair: opt.wFair !== undefined ? opt.wFair : (hasBias ? 0 : 0.5),
@@ -670,6 +696,11 @@ function teamCost(ctx, mem){
       const m = ctx.M[i*n+j];
       if(m) c += ctx.wMeet * m * m;
       if(ctx.partyPen && ctx.party[i] && ctx.party[i]===ctx.party[j]) c += ctx.partyPen;
+      for(let k=0;k<ctx.guards.length;k++){
+        const gv = ctx.guards[k];
+        if(gv[i] >= 0 && gv[i] === gv[j]) c += GUARD_PEN;
+      }
+      if(ctx.pairW) c += ctx.pairW[i*n+j];
     }
   }
   for(let k=0;k<ctx.attrs.length;k++){
@@ -841,6 +872,26 @@ function pairSizes(n, odd){
   if(odd==='triple' && n>=3){ const a = new Array((n-3)/2).fill(2); a.push(3); return a; }
   const a = new Array((n-1)/2).fill(2); a.push(1); return a;
 }
+/* 지킬 열은 *이름* 으로 들고 있다 — 번호로 들면 명단을 다시 붙일 때 죽는다 */
+function roomGuards(){
+  return (S.rooms.guardNames || [])
+    .map(h=>S.headers.indexOf(h))
+    .filter(i=>i>=0 && S.roles[i]==='attr');
+}
+/* 사람이 고른 짝을 값으로 바꾼다. 한 묶음 안의 모든 짝에 적용된다. */
+function roomPairs(){
+  const out = [];
+  const add = (list, w)=>{
+    for(const grp of (list||[])){
+      const who = grp.filter(n=>PIDX.has(n) && !S.out[n]);
+      for(let a=0;a<who.length;a++) for(let b=a+1;b<who.length;b++)
+        out.push({ a:who[a], b:who[b], w });
+    }
+  };
+  add(S.rooms.avoid,  AVOID_PEN);
+  add(S.rooms.prefer, -PREFER_BONUS);
+  return out;
+}
 function computeRooms(){
   const R = S.rooms;
   R.list = null;
@@ -865,7 +916,8 @@ function computeRooms(){
     const sizes = pairSizes(names.length, R.odd);
     if(!sizes.length) continue;
     // 방은 모두 2인실이라 기회를 따질 것이 없다 — 안 만난 사이인지만 본다
-    const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:10, wFair:0, nTeams: sizes.length,
+    const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:ROOM_MEET, wFair:0, nTeams: sizes.length,
+                                            guards: roomGuards(), pairs: roomPairs(),
                                             noParty: R.allowParty ? false : true });
     const best = solve(ctx, sizes, (R.seed|0) + gi*31337, 6);
     for(const grp of best.teams) out.push({ who: grp.map(i=>names[i]), fixed:false, gender:g });
@@ -975,13 +1027,49 @@ function diagnose(){
     d.sessions.push(rec);
   }
 
-  // 숙박 성별 검사
-  if(S.rooms.list && S.genderCol>=0){
-    for(const r of S.rooms.list){
+  // 숙박 검사 — 성별 · 이미 만난 사이 · 지킬 열 · 사람이 고른 짝
+  const R = S.rooms;
+  if(R.list){
+    const roomOf = new Map();
+    R.list.forEach((r,i)=> r.who.forEach(n=> roomOf.set(n, i)));
+    if(S.genderCol>=0) for(const r of R.list){
       if(r.fixed) continue;
       const gs = new Set(r.who.map(n=>valOf(PEOPLE[PIDX.get(n)], S.genderCol)));
       if(gs.size>1) d.violations.push('숙박 — ' + r.who.join(', ') + ' 방에 성별이 섞였습니다');
     }
+    // 이미 만난 사이가 한 방에
+    const met = [];
+    for(const r of R.list){
+      if(r.fixed) continue;
+      for(let a=0;a<r.who.length;a++) for(let b=a+1;b<r.who.length;b++){
+        const i = PIDX.get(r.who[a]), j = PIDX.get(r.who[b]);
+        if(i!=null && j!=null && MEET[i*NP+j] > (R.count?1:0)) met.push(r.who[a]+'·'+r.who[b]);
+      }
+    }
+    d.roomMet = met;
+    // 같은 값이면 다른 방으로 두기로 한 열
+    for(const ci of roomGuards()){
+      for(const r of R.list){
+        if(r.fixed) continue;
+        const vs = r.who.map(n=>valOf(PEOPLE[PIDX.get(n)], ci)).filter(v=>v!=='—');
+        if(vs.length>1 && new Set(vs).size===1)
+          d.violations.push('숙박 — ' + r.who.join(', ') + ' 방이 ' + S.headers[ci] + ' 가 같습니다 (' + vs[0] + ')');
+      }
+    }
+    // 사람이 고른 짝
+    for(const grp of (R.avoid||[])){
+      const who = grp.filter(n=>PIDX.has(n) && !S.out[n]);
+      for(let a=0;a<who.length;a++) for(let b=a+1;b<who.length;b++)
+        if(roomOf.get(who[a]) === roomOf.get(who[b]) && roomOf.has(who[a]))
+          d.violations.push('숙박 — ' + who[a] + ' 와 ' + who[b] + ' 는 같은 방 안 된다고 했는데 같은 방입니다');
+    }
+    const missed = [];
+    for(const grp of (R.prefer||[])){
+      const who = grp.filter(n=>PIDX.has(n) && !S.out[n]);
+      for(let a=0;a<who.length;a++) for(let b=a+1;b<who.length;b++)
+        if(roomOf.get(who[a]) !== roomOf.get(who[b])) missed.push(who[a]+'·'+who[b]);
+    }
+    d.roomMissed = missed;
   }
   return d;
 }
@@ -1502,26 +1590,51 @@ function renderRooms(){
     + '<span class="sp" style="flex:1"></span><button class="btn sm" id="r-reroll">다시 섞기</button>'
     + '</div></div>';
 
-  // 강제 편성
+  // 같은 값이면 다른 방으로 둘 열들
   h += '<div class="card pad noprint" style="margin-top:14px">'
-    +  '<div class="row" style="margin-bottom:6px"><span class="lbl">강제 편성</span>'
-    +  '<span class="note">먼저 방을 만들고, 넣을 사람을 누릅니다. 성별을 따지지 않습니다.</span>'
-    +  '<span class="sp" style="flex:1"></span><button class="btn sm" id="r-addfix">방 만들기</button></div>';
-  if(!R.fixed.length){
-    h += '<div class="note">강제 편성한 방이 없습니다.</div>';
-  } else {
-    const taken = new Set(); R.fixed.forEach(r=>r.forEach(n=>taken.add(n)));
-    R.fixed.forEach((room, ri)=>{
-      h += '<div class="fixroom"><span class="pill">'+(ri+1)+'번</span><div class="who">'
-        +  activeNames().map(n=>{
-             const inThis = room.indexOf(n)>=0;
-             const inOther = !inThis && taken.has(n);
-             return '<button class="mini'+(inThis?' sel':'')+(inOther?' dim':'')+'" data-fix="'+ri+':'+esc(n)+'">'+esc(n)+'</button>';
-           }).join('')
-        +  '</div><button class="btn sm warn" data-fixdel="'+ri+'">방 없애기</button></div>';
-    });
+    +  '<div class="row" style="margin-bottom:6px"><span class="lbl">같은 값이면 다른 방</span>'
+    +  '<span class="note">눌러서 켭니다. 소속·설계팀처럼 이미 아는 사이가 되는 열을 고르세요.</span></div>'
+    +  '<div class="who">'
+    +  attrCols().map(ci=>{
+         const on = (R.guardNames||[]).indexOf(S.headers[ci]) >= 0;
+         return '<button class="mini'+(on?' sel':'')+'" data-guard="'+esc(S.headers[ci])+'">'
+              + esc(S.headers[ci]) + '</button>';
+       }).join('')
+    +  '</div>'
+    +  '<div class="note" style="margin-top:6px">이미 만난 사이는 늘 피합니다 — 따로 켤 것이 없습니다.</div>'
+    +  '</div>';
+
+  // 짝 세 가지 — 몸짓은 같다: 묶음을 만들고 이름을 누른다
+  const LISTS = [
+    { k:'fixed',  t:'같은 방으로 묶기', n:'성별을 따지지 않습니다. 반드시 이대로 갑니다.', add:'묶음 만들기' },
+    { k:'avoid',  t:'같은 방 안 됨',    n:'한 묶음에 넣은 사람끼리는 서로 다른 방으로 갑니다.', add:'묶음 만들기' },
+    { k:'prefer', t:'되도록 같은 방',   n:'가능하면 붙여 줍니다. 성별이 다르면 안 됩니다.',   add:'묶음 만들기' }
+  ];
+  for(const L of LISTS){
+    const list = R[L.k] || (R[L.k] = []);
+    h += '<div class="card pad noprint" style="margin-top:14px">'
+      +  '<div class="row" style="margin-bottom:6px"><span class="lbl">'+L.t+'</span>'
+      +  '<span class="note">'+L.n+'</span>'
+      +  '<span class="sp" style="flex:1"></span>'
+      +  '<button class="btn sm" data-ppadd="'+L.k+'">'+L.add+'</button></div>';
+    if(!list.length){
+      h += '<div class="note">아직 없습니다.</div>';
+    } else {
+      const taken = new Set();
+      if(L.k==='fixed') list.forEach(r=>r.forEach(n=>taken.add(n)));
+      list.forEach((grp, ri)=>{
+        h += '<div class="fixroom"><span class="pill">'+(ri+1)+'</span><div class="who">'
+          +  activeNames().map(n=>{
+               const inThis = grp.indexOf(n)>=0;
+               const inOther = !inThis && taken.has(n);
+               return '<button class="mini'+(inThis?' sel':'')+(inOther?' dim':'')
+                    + '" data-pp="'+L.k+':'+ri+':'+esc(n)+'">'+esc(n)+'</button>';
+             }).join('')
+          +  '</div><button class="btn sm warn" data-ppdel="'+L.k+':'+ri+'">지우기</button></div>';
+      });
+    }
+    h += '</div>';
   }
-  h += '</div>';
 
   // 결과
   if(R.list && R.list.length){
@@ -1554,18 +1667,34 @@ function renderRooms(){
   $('r-party').onchange = (e)=> act(()=>{ R.allowParty = e.target.checked; });
   $('r-count').onchange = (e)=> act(()=>{ R.count = e.target.checked; });
   $('r-reroll').onclick = ()=> act(()=>{ R.seed = Math.floor(Math.random()*1e6); });
-  $('r-addfix').onclick = ()=> act(()=>{ R.fixed.push([]); });
-  b.querySelectorAll('[data-fix]').forEach(el=>{
+  b.querySelectorAll('[data-guard]').forEach(el=>{
     el.onclick = ()=> act(()=>{
-      const i = el.dataset.fix.indexOf(':');
-      const ri = +el.dataset.fix.slice(0,i), n = el.dataset.fix.slice(i+1);
-      R.fixed.forEach((room,k)=>{ const p = room.indexOf(n); if(p>=0 && k!==ri) room.splice(p,1); });
-      const room = R.fixed[ri]; const p = room.indexOf(n);
-      if(p>=0) room.splice(p,1); else room.push(n);
+      const h2 = el.dataset.guard;
+      if(!R.guardNames) R.guardNames = [];
+      const p = R.guardNames.indexOf(h2);
+      if(p>=0) R.guardNames.splice(p,1); else R.guardNames.push(h2);
     });
   });
-  b.querySelectorAll('[data-fixdel]').forEach(el=>{
-    el.onclick = ()=> act(()=>{ R.fixed.splice(+el.dataset.fixdel,1); });
+  b.querySelectorAll('[data-ppadd]').forEach(el=>{
+    el.onclick = ()=> act(()=>{ const k = el.dataset.ppadd; (R[k] = R[k]||[]).push([]); });
+  });
+  b.querySelectorAll('[data-pp]').forEach(el=>{
+    el.onclick = ()=> act(()=>{
+      const d = el.dataset.pp;
+      const i1 = d.indexOf(':'), i2 = d.indexOf(':', i1+1);
+      const k = d.slice(0,i1), ri = +d.slice(i1+1,i2), n = d.slice(i2+1);
+      const list = R[k];
+      // 강제 편성은 한 사람이 두 묶음에 들 수 없다 (방이 하나뿐이라)
+      if(k==='fixed') list.forEach((g,x)=>{ const p = g.indexOf(n); if(p>=0 && x!==ri) g.splice(p,1); });
+      const grp = list[ri], p = grp.indexOf(n);
+      if(p>=0) grp.splice(p,1); else grp.push(n);
+    });
+  });
+  b.querySelectorAll('[data-ppdel]').forEach(el=>{
+    el.onclick = ()=> act(()=>{
+      const d = el.dataset.ppdel, q = d.indexOf(':');
+      R[d.slice(0,q)].splice(+d.slice(q+1), 1);
+    });
   });
 }
 
@@ -1596,6 +1725,21 @@ function renderDiag(){
       +  d.violations.map(v=>esc(v)).join('<br>') + '</div>';
   } else {
     h += '<div class="okbox" style="margin-top:14px">일행이 같은 조에 든 곳도, 방에 성별이 섞인 곳도 없습니다.</div>';
+  }
+  if((d.roomMet && d.roomMet.length) || (d.roomMissed && d.roomMissed.length)){
+    h += '<div class="warnbox" style="margin-top:10px; border-left-color:var(--gold); background:var(--gold-soft)">'
+      +  (d.roomMet && d.roomMet.length
+          ? '<b>같은 방인데 이미 만난 사이</b> ' + d.roomMet.length + '쌍 — '
+            + d.roomMet.slice(0,6).map(esc).join(', ') + (d.roomMet.length>6?' 외':'')
+            + '<br><span class="note">방이 모자라 피할 수 없었습니다. 조 크기를 바꾸거나 세션 배정을 다시 섞어 보세요.</span>'
+          : '')
+      +  (d.roomMissed && d.roomMissed.length
+          ? (d.roomMet && d.roomMet.length ? '<br>' : '')
+            + '<b>되도록 같은 방을 못 지킨 짝</b> ' + d.roomMissed.length + '쌍 — '
+            + d.roomMissed.slice(0,6).map(esc).join(', ')
+            + '<br><span class="note">성별이 다르거나 다른 약속과 부딪혔습니다. 꼭 붙이려면 같은 방으로 묶기를 쓰세요.</span>'
+          : '')
+      +  '</div>';
   }
 
   // 세션별 균형

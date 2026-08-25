@@ -926,6 +926,109 @@ function runGuestCount(){
   C.recompute();
 }
 
+/* ── 사전교육 기수 ── */
+function runCohort(){
+  console.log('\n\x1b[1m같은 기수는 해커톤에서 갈린다\x1b[0m');
+  const rows = [['이름','성별','사전교육 기수','개발 경험']];
+  const pool = ['1','2','3','O','?','X'];
+  for(let i=0;i<30;i++){
+    const nm = NAMES_B[i%NAMES_B.length] + (i>=NAMES_B.length?'2':'');
+    // 스물넷은 기수 1~4 를 여섯씩, 여섯은 안 적었다
+    const gi = i<24 ? String(1 + (i%4)) : '';
+    rows.push([nm, i<14?'남':'여', gi, pool[i%pool.length]]);
+  }
+  C.S = C.blankState();
+  C.takeTable(rows.map(r=>r.join('\t')).join('\n'));
+  const st = C.S;
+  const ci = st.headers.indexOf('사전교육 기수');
+  const hack = st.sessions.find(x=>x.name==='해커톤');
+
+  assert(!!(hack.attrs[ci] && hack.attrs[ci].level),
+    '해커톤이 기수 열을 저절로 켰다 ('+JSON.stringify(hack.attrs[ci])+')');
+  assert(!!(hack.attrs[ci] && hack.attrs[ci].numOnly),
+    '숫자만 보기로 켰다 — 안 적은 사람은 그냥 둔다');
+  const others = st.sessions.filter(x=>x!==hack && x.attrs[ci] && x.attrs[ci].level);
+  assert(others.length === 0, '다른 세션은 기수를 보지 않는다 ('+others.map(x=>x.name).join(' ')+')');
+  assert(!(hack.bias && Object.keys(hack.bias).some(k=>k.indexOf(ci+':')===0)),
+    '기수를 유·불리로 삼지 않는다');
+  assert(!(hack.rank && hack.rank[ci]), '기수에 가중치를 매기지 않는다');
+
+  st.sessions.forEach(x=>{ x.mode='size'; x.size=5; });
+  C.recompute();
+  const gOf = (n)=> C.valOf(C.PEOPLE[C.PIDX.get(n)], ci);
+  let worst = 0;
+  const per = (hack.teams||[]).map(g=>{
+    const m = new Map();
+    for(const n of g){ const v = gOf(n); if(!/^\d+$/.test(v)) continue; m.set(v,(m.get(v)||0)+1); }
+    const mx = m.size ? Math.max.apply(null, Array.from(m.values())) : 0;
+    if(mx > worst) worst = mx;
+    return (hack.teams.length ? Array.from(m.entries()).sort().map(e=>e[0]+'×'+e[1]).join(' ') : '');
+  });
+  assert(worst <= 1, '한 조에 같은 기수가 둘 이상 없다 ('+per.join(' / ')+')');
+
+  // 안 적은 사람은 이 열 때문에 갈리지 않는다 — 몫을 숫자 적은 사람끼리만 나눈다
+  const blanks = (hack.teams||[]).map(g=> g.filter(n=>!/^\d+$/.test(gOf(n))).length);
+  ok('기수를 안 적은 여섯의 분포 ' + blanks.join('/') + ' — 이 열이 밀지 않는다');
+
+  // 다 갈 수 없는 판 — 조보다 사람이 많은 기수. 산수만큼만 겹치고, 진단이 말한다
+  const rows2 = [['이름','성별','기수']];
+  for(let i=0;i<30;i++){
+    const nm = NAMES_B[i%NAMES_B.length] + (i>=NAMES_B.length?'2':'');
+    rows2.push([nm, i<15?'남':'여', i<9 ? '1' : (i<21 ? '2' : '')]);
+  }
+  C.S = C.blankState();
+  C.takeTable(rows2.map(r=>r.join('\t')).join('\n'));
+  const st2 = C.S;
+  st2.sessions.forEach(x=>{ x.mode='size'; x.size=5; });
+  C.recompute();
+  const h2 = st2.sessions.find(x=>x.name==='해커톤');
+  const c2 = st2.headers.indexOf('기수');
+  const g2 = (n)=> C.valOf(C.PEOPLE[C.PIDX.get(n)], c2);
+  let pairs = 0;
+  for(const g of (h2.teams||[])){
+    const m = new Map();
+    for(const n of g){ const v=g2(n); if(!/^\d+$/.test(v)) continue; m.set(v,(m.get(v)||0)+1); }
+    for(const k of m.values()) pairs += k*(k-1)/2;
+  }
+  // 1기 아홉을 여섯 조에 → 세 조가 둘씩(3쌍), 2기 열둘 → 여섯 조가 둘씩(6쌍)
+  assert(pairs === 9, '못 가르는 만큼만 겹친다 ('+pairs+'쌍, 산수로 9쌍)');
+  const dg2 = C.diagnose();
+  const said = (dg2.violations||[]).filter(v=>v.indexOf('기수')>=0);
+  assert(said.length === 1 && said[0].indexOf('9쌍') > 0,
+    '진단이 겹친 짝을 빠짐없이 말한다 ('+(said[0]||'말이 없다')+')');
+}
+
+/* ── 손으로 적은 짝이 자동 규칙을 다 이기는가 ── */
+/* 무작위 명단에서 어쩌다 걸렸던 자리다: 한 번 만난 사이(400×2=800)에 같은 소속(800)이
+   겹치면 1600 이라 옛 PREFER_BONUS(1500)가 졌다. 여기서는 그 자리를 일부러 만든다. */
+function runPreferHard(){
+  console.log('\n\x1b[1m손으로 적은 "되도록 같은 방" 이 자동 규칙을 다 이긴다\x1b[0m');
+  const orgs = ['가','가','나','나','다','다','라','라','마','마','바','바'];
+  const rows = [['이름','성별','소속']];
+  for(let i=0;i<12;i++) rows.push([NAMES_B[i], '남', orgs[i]]);
+  C.S = C.blankState();
+  C.takeTable(rows.map(r=>r.join('\t')).join('\n'));
+  const st = C.S;
+  st.rooms.guardNames = ['소속'];
+  st.sessions.forEach(x=>{ x.mode='size'; x.size=4; });
+  C.recompute();
+
+  const A = NAMES_B[0], B = NAMES_B[1];          // 소속이 같은 둘
+  // 두 세션에서 같은 조에 못 박아 **두 번 만난 사이**로 만든다 (400×2 = 800)
+  st.sessions[0].pin = { [A]:0, [B]:0 };
+  st.sessions[1].pin = { [A]:0, [B]:0 };
+  C.recompute();
+  const m = C.MEET[C.PIDX.get(A)*C.NP + C.PIDX.get(B)];
+  assert(m >= 2, '그 둘을 두 번 만난 사이로 만들었다 ('+m+'회)');
+
+  st.rooms.prefer = [[A, B]];
+  C.recompute();
+  const r = new Map();
+  st.rooms.list.forEach((x,i)=> x.who.forEach(n=> r.set(n,i)));
+  assert(r.get(A) === r.get(B),
+    '만난 사이('+m+'회)에 같은 소속인데도 같은 방에 넣었다 ('+A+' · '+B+')');
+}
+
 /* ── 돌리기 ── */
 /* 판 수를 0 으로 주면 무작위 판을 건너뛰고 시나리오만 돌린다 — 고치는 동안 빠르게 본다 */
 const N = Math.max(0, parseInt(process.argv[2] == null ? '6' : process.argv[2], 10) || 0);
@@ -952,11 +1055,13 @@ runOdd();
 runBias();
 runScale();
 runRooms();
+runPreferHard();
 runPin();
 runCompanion();
 runPower();
 runPartyByName();
 runGuestCount();
+runCohort();
 
 console.log('\n' + '─'.repeat(52));
 const slow = times.length ? Math.max.apply(null, times) : 0;

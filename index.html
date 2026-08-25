@@ -525,11 +525,20 @@ function defaultRank(vals){
 /* 방은 둘뿐이라 한 번 잘못 묶으면 밤새 그대로다.
    이미 만난 사이도, 같은 소속·설계팀도 사실상 금지로 둔다. */
 const GUARD_PEN = 800, ROOM_MEET = 400;
+/* `한 조에 하나만` — 같은 값이 한 조에 겹칠 때마다 짝마다 무는 값.
+   조마다 비율을 맞추는 `조마다 나눔` 과는 다른 물건이다. 기수처럼 안 적은 사람이
+   많은 열에서는 비율이 뜻을 잃는다(적은 사람이 적은 조는 몫도 적어져 겹쳐도 싸다).
+   겹친 **짝**에 직접 값을 매기면 그런 셈이 끼어들지 않는다. */
+const APART_W = [0, 30, 120, 600];
 /* 사람이 직접 고른 짝. 싫다는 것은 사실상 금지, 좋다는 것은 되도록.
-   되도록(1500)은 자동 규칙들(만난 사이 400 + 같은 소속 800)을 합친 것보다 커야 한다 —
-   사람이 직접 말한 희망이 우리가 넣은 어림짐작에 밀리면 안 된다.
-   성별과 '같은 방 안 됨' 은 여전히 이긴다. */
-const AVOID_PEN = 3000, PREFER_BONUS = 1500;
+   되도록은 자동 규칙을 **다 합친 것**보다 커야 한다 — 사람이 직접 말한 희망이
+   우리가 넣은 어림짐작에 밀리면 안 된다. 합은 같은 소속 800 + 만난 사이 400×m 인데,
+   `같은 방도 만남으로 셈함` 이 켜져 있으면 방 자체가 1 을 더해 m 이 3 까지 간다(1200).
+   1500 으로는 한 번 만난 사이(800)에 소속(800)만 겹쳐도 진다 — 실측으로 걸렸다.
+   그래서 2400. 잠자리는 예민한 자리라, 손으로 적어 넣은 짝은 우리 규칙보다 위다 —
+   동행인 둘(2000)·일행(2000)도 이긴다. 성별은 아예 다른 무리라 넘을 수 없고,
+   '같은 방 안 됨' 은 여전히 맨 위다. */
+const AVOID_PEN = 4000, PREFER_BONUS = 2400;
 /* 한 방에 동행인 둘은 안 된다. 따라온 사람끼리 밤을 보내면 워크샵에서 얻을 것이
    가장 많은 두 사람이 서로만 보고 끝난다. 진행자가 정한 규칙이라 사람이 고른
    '되도록 같은 방'(1500)보다 세게 둔다 — 일행 규칙(2000)과 같은 층이다. */
@@ -704,14 +713,19 @@ function buildCtx(names, meet, N, opt){
   const party = names.map(nm=> PEOPLE[PIDX.get(nm)].party || '');
   const guest = names.map(nm=> !!PEOPLE[PIDX.get(nm)].guest);
   // 같은 값이면 한 방에 두지 않을 열들 (소속·설계팀 같은 것)
-  const guards = (opt.guards || []).map(ci=>{
+  const guards = (opt.guards || []).map(g=>{
+    const ci      = (typeof g === 'object') ? g.ci : g;
+    const w       = (typeof g === 'object' && g.w) ? g.w : GUARD_PEN;
+    const numOnly = (typeof g === 'object') ? !!g.numOnly : false;
     const idOf = new Map();
-    return names.map(nm=>{
-      const v = valOf(PEOPLE[PIDX.get(nm)], ci);
-      if(v === '—') return -1;
-      if(!idOf.has(v)) idOf.set(v, idOf.size);
-      return idOf.get(v);
+    const v = names.map(nm=>{
+      const val = valOf(PEOPLE[PIDX.get(nm)], ci);
+      if(val === '—') return -1;                          // 안 적은 사람은 그냥 둔다
+      if(numOnly && !NUMV.test(val)) return -1;           // 숫자로 적은 것만 본다
+      if(!idOf.has(val)) idOf.set(val, idOf.size);
+      return idOf.get(val);
     });
+    return { v, w };
   });
   // 지금까지 같은 조에 앉은 자리 수 — 이 세션 몫은 빠져 있다.
   // 적게 앉은 사람을 큰 조로 보내 만날 기회를 고르게 한다.
@@ -773,15 +787,21 @@ function buildCtx(names, meet, N, opt){
     if(biasCols.has(spec.ci)) continue;
     const vs = []; const map = new Map();
     const v = new Int32Array(n);
+    /* 기수처럼 **숫자로만 적는** 열이 있다. 안 적은 사람은 그냥 두어야 한다 —
+       빈 칸끼리 한 덩어리로 세면 '빈 칸인 사람들'도 조마다 나뉘어, 아무도 요구하지
+       않은 제약이 진짜 제약과 자리를 다툰다. -1 은 이 열에서 빠진다는 뜻이다. */
+    let nEff = 0;
     for(let i=0;i<n;i++){
       const val = valOf(PEOPLE[PIDX.get(names[i])], spec.ci);
+      if(spec.numOnly && !NUMV.test(val)){ v[i] = -1; continue; }
       if(!map.has(val)){ map.set(val, vs.length); vs.push(val); }
-      v[i] = map.get(val);
+      v[i] = map.get(val); nEff++;
     }
+    if(!vs.length) continue;
     const tot = new Array(vs.length).fill(0);
-    for(let i=0;i<n;i++) tot[v[i]]++;
+    for(let i=0;i<n;i++) if(v[i] >= 0) tot[v[i]]++;
     attrs.push({ ci:spec.ci, w:spec.w, mode:spec.mode||'spread', v, tot, nv:vs.length,
-                 vals:vs, buf:new Array(vs.length).fill(0) });
+                 nEff, some: nEff < n, vals:vs, buf:new Array(vs.length).fill(0) });
   }
   const hasBias = biasCols.size > 0;
   const avgL = n / Math.max(1, opt.nTeams || 1);
@@ -872,8 +892,8 @@ function teamCost(ctx, mem){
       if(ctx.partyPen && ctx.party[i] && ctx.party[i]===ctx.party[j]) c += ctx.partyPen;
       if(ctx.guestPen && ctx.guest[i] && ctx.guest[j]) c += ctx.guestPen;
       for(let k=0;k<ctx.guards.length;k++){
-        const gv = ctx.guards[k];
-        if(gv[i] >= 0 && gv[i] === gv[j]) c += GUARD_PEN;
+        const g = ctx.guards[k];
+        if(g.v[i] >= 0 && g.v[i] === g.v[j]) c += g.w;
       }
       if(ctx.pairW) c += ctx.pairW[i*n+j];
     }
@@ -881,13 +901,16 @@ function teamCost(ctx, mem){
   for(let k=0;k<ctx.attrs.length;k++){
     const at = ctx.attrs[k], cnt = at.buf;
     for(let v=0;v<at.nv;v++) cnt[v]=0;
-    for(let a=0;a<L;a++) cnt[at.v[mem[a]]]++;
+    let Le = 0;
+    for(let a=0;a<L;a++){ const vi = at.v[mem[a]]; if(vi >= 0){ cnt[vi]++; Le++; } }
+    // 이 열에서 빠진 사람이 있으면 몫도 남은 사람끼리 나눈다
+    const Lz = at.some ? Le : L, nz = at.some ? at.nEff : n;
     if(at.mode==='cluster'){
       let ss=0; for(let v=0;v<at.nv;v++) ss += cnt[v]*cnt[v];
-      c += at.w * (L*L - ss) / 2;
+      c += at.w * (Lz*Lz - ss) / 2;
     } else {
       for(let v=0;v<at.nv;v++){
-        const ideal = at.tot[v] * L / n;
+        const ideal = nz ? at.tot[v] * Lz / nz : 0;
         const d = cnt[v] - ideal;
         c += at.w * d * d;
       }
@@ -945,18 +968,22 @@ function solve(ctx, sizes, seed, tries){
   return best;
 }
 function sessCtxOpts(sess, names){
-  const specs = [];
+  const specs = [], gds = [];
   for(const ci of attrCols()){
     const cfg = sess.attrs[ci];
     if(!cfg || !cfg.level) continue;
-    specs.push({ ci, w: LV_W[cfg.level], mode: cfg.mode || 'spread' });
+    if(cfg.mode === 'apart'){   // 같은 값이 한 조에 겹치는 짝마다 값을 문다
+      gds.push({ ci, w: APART_W[cfg.level], numOnly: !!cfg.numOnly });
+      continue;
+    }
+    specs.push({ ci, w: LV_W[cfg.level], mode: cfg.mode || 'spread', numOnly: !!cfg.numOnly });
   }
   /* 동행으로 따라온 사람은 어느 세션에서든 고르게 흩어진다.
      해커톤처럼 이 값에 유·불리를 정한 세션에서는 buildCtx 가 이 몫을 걷어내고
      기울인 목표에 넘긴다 — 둘이 같이 당기면 기울기가 묻힌다. */
   if(S.roles.indexOf('party') >= 0)
     specs.push({ ci: PARTY_CI, w: GUEST_SPREAD_W, mode:'spread' });
-  return { attrs: specs, wMeet: MEET_W[sess.meet], bias: sess.bias || null,
+  return { attrs: specs, guards: gds, wMeet: MEET_W[sess.meet], bias: sess.bias || null,
            rank: sess.rank || null, pin: sess.pin || null,
            nTeams: teamSizes(names.length, sess).length };
 }
@@ -1229,24 +1256,53 @@ function diagnose(){
     for(const ci of attrCols()){
       const cfg = s.attrs[ci];
       const lvl = cfg ? cfg.level : 0;
+      // 숫자로만 보는 열은 안 적은 사람이 빠진다 — 몫도 남은 사람끼리 나눈다
+      const keep = (cfg && cfg.numOnly) ? (v)=>NUMV.test(v) : ()=>true;
+      // `한 조에 하나만` 은 비율이 아니라 **겹친 짝**을 센다
+      if(cfg && cfg.mode === 'apart'){
+        let pairs = 0;
+        for(const g of s.teams){
+          const cnt = new Map();
+          for(const nm of g){
+            const v = valOf(PEOPLE[PIDX.get(nm)], ci);
+            if(v === '—' || !keep(v)) continue;
+            cnt.set(v, (cnt.get(v)||0) + 1);
+          }
+          for(const k of cnt.values()) pairs += k*(k-1)/2;
+        }
+        rec.attrs.push({ ci, name:S.headers[ci], level:lvl, mode:'apart', dev:pairs, tilted:false });
+        if(pairs) d.violations.push(s.name + ' — ' + S.headers[ci] + ' 가 같은 사람이 '
+          + pairs + '쌍 같은 조입니다');
+        continue;
+      }
       const vals = new Map();
-      for(const nm of names){ const v = valOf(PEOPLE[PIDX.get(nm)], ci); vals.set(v,(vals.get(v)||0)+1); }
+      let nEff = 0;
+      for(const nm of names){
+        const v = valOf(PEOPLE[PIDX.get(nm)], ci);
+        if(!keep(v)) continue;
+        vals.set(v,(vals.get(v)||0)+1); nEff++;
+      }
       // 유·불리를 정한 값은 목표가 조 크기 쪽으로 기울어 있다.
       // 비례로 재면 일부러 기울인 것이 어긋난 것처럼 보인다.
       const bias = s.bias || {};
-      const avgL = names.length / Math.max(1, s.teams.length);
+      const avgL = nEff / Math.max(1, s.teams.length);
       let maxDev = 0, tilted = false;
       for(const g of s.teams){
         const cnt = new Map();
-        for(const nm of g){ const v = valOf(PEOPLE[PIDX.get(nm)], ci); cnt.set(v,(cnt.get(v)||0)+1); }
+        let Le = 0;
+        for(const nm of g){
+          const v = valOf(PEOPLE[PIDX.get(nm)], ci);
+          if(!keep(v)) continue;
+          cnt.set(v,(cnt.get(v)||0)+1); Le++;
+        }
         for(const [v,tot] of vals){
           let ideal;
           if(bias[ci+':'+v] > 0){
             tilted = true;
-            ideal = tot * (g.length + BIAS_TILT*(g.length - avgL)) / Math.max(1,names.length);
+            ideal = tot * (Le + BIAS_TILT*(Le - avgL)) / Math.max(1,nEff);
             if(ideal < 0) ideal = 0;
           } else {
-            ideal = tot * g.length / Math.max(1,names.length);
+            ideal = tot * Le / Math.max(1,nEff);
           }
           maxDev = Math.max(maxDev, Math.abs((cnt.get(v)||0) - ideal));
         }
@@ -1548,6 +1604,10 @@ function takeTable(text, forceHeader){
 const RE_HACK = /해커톤|해커|hack/i;
 const RE_DEV  = /개발|코딩|코드|프로그래밍|dev|coding|program|engineer/i;
 const RE_EDU  = /교육|수료|사전|학습|이수|training|course|onboard/i;
+/* 사전교육 기수. 같은 기수는 이미 같이 배운 사이라 해커톤에서 또 묶이면 새로 만날 일이 없다.
+   RE_EDU 보다 **먼저** 본다 — '사전교육 기수' 는 둘 다 걸리는데, 이 열은 수료 여부가 아니다.
+   값은 숫자로만 적고, 안 적은 사람은 이 규칙에서 빠진다(`numOnly`). */
+const RE_COHORT = /기수|차수|기별|코호트|cohort|batch/i;
 /* 값 하나를 보고 유리한 쪽인지 불리한 쪽인지 짐작한다.
    O·X 처럼 기호로 적는 시트가 많아 기호를 먼저 본다.
    '미수료'는 '수료'를, '불가능'은 '가능'을 품고 있으니 불리 쪽을 먼저 봐야 한다. */
@@ -1585,7 +1645,8 @@ function autoDefaults(){
     S.headers.forEach((h,ci)=>{
       if(S.roles[ci]!=='attr') return;
       if(s.attrs[ci]) return;                     // 사람이 이미 정했다
-      if(RE_EDU.test(h)) s.attrs[ci] = { level:3, mode:'spread' };
+      if(RE_COHORT.test(h)){ if(hack) s.attrs[ci] = { level:2, mode:'apart', numOnly:true }; }
+      else if(RE_EDU.test(h)) s.attrs[ci] = { level:3, mode:'spread' };
       else if(hack && RE_DEV.test(h)) s.attrs[ci] = { level:3, mode:'spread' };
     });
     // 해커톤은 조 크기로도 메운다 — 없음·미수료가 손이 많은 조로 간다
@@ -1595,6 +1656,7 @@ function autoDefaults(){
       if(S.roles.indexOf('party') >= 0) b[PARTY_CI + ':동행'] = 1;
       S.headers.forEach((h,ci)=>{
         if(S.roles[ci]!=='attr') return;
+        if(RE_COHORT.test(h)) return;              // 기수는 유·불리가 아니다 — 흩기만 한다
         if(!RE_DEV.test(h) && !RE_EDU.test(h)) return;
         const vals = colValues(ci);
         const sc = scaleBias(vals);
@@ -1610,7 +1672,7 @@ function autoDefaults(){
       const r = {};
       S.headers.forEach((h,ci)=>{
         if(S.roles[ci] !== 'attr') return;
-        if(!RE_DEV.test(h)) return;
+        if(RE_COHORT.test(h) || !RE_DEV.test(h)) return;
         const d = defaultRank(colValues(ci));
         if(d && Object.keys(d).length >= 3) r[ci] = d;
       });
@@ -1706,8 +1768,11 @@ function renderSessions(){
           +  '<span class="an">'+esc(S.headers[ci])+'</span>'
           +  seg('attr', si+':'+ci, cfg.level)
           +  (cfg.level ? '<span class="seg">'
-               + '<button data-amode="'+si+':'+ci+'" data-m="spread" class="'+(cfg.mode!=='cluster'?'on':'')+'">조마다 나눔</button>'
-               + '<button data-amode="'+si+':'+ci+'" data-m="cluster" class="'+(cfg.mode==='cluster'?'on':'')+'">같은 값끼리</button>'
+               + ['spread','apart','cluster'].map(m=>
+                   '<button data-amode="'+si+':'+ci+'" data-m="'+m+'" class="'
+                   + (((cfg.mode||'spread')===m)?'on':'') + '">'
+                   + ({spread:'조마다 나눔', apart:'한 조에 하나만', cluster:'같은 값끼리'})[m]
+                   + '</button>').join('')
                + '</span>' : '')
           +  '</div>';
       }
@@ -2165,18 +2230,23 @@ function renderDiag(){
   for(const s of d.sessions){
     h += '<tr><td>'+esc(s.name)+'</td><td class="n">'+s.teams+'</td>';
     for(const a of s.attrs){
-      const ok = a.dev < 0.75, mid2 = a.dev < 1.5;
+      const apart = a.mode === 'apart';
+      const ok = apart ? a.dev === 0 : a.dev < 0.75;
+      const mid2 = apart ? a.dev <= 2 : a.dev < 1.5;
       const p = a.level ? (ok?'ok':(mid2?'warn':'bad')) : '';
       h += '<td>' + (a.level===0 && !a.tilted
             ? '<span class="note">—</span>'
-            : '<span class="pill '+p+'">'+(a.mode==='cluster'?'모음':'')+(a.tilted?'조 크기 ':'')
-              +'<span class="v">±'+a.dev.toFixed(1)+'</span></span>')
+            : apart
+              ? '<span class="pill '+p+'">겹친 짝 <span class="v">'+a.dev+'</span></span>'
+              : '<span class="pill '+p+'">'+(a.mode==='cluster'?'모음':'')+(a.tilted?'조 크기 ':'')
+                +'<span class="v">±'+a.dev.toFixed(1)+'</span></span>')
         + '</td>';
     }
     h += '</tr>';
   }
   h += '</tbody></table></div><div class="note" style="margin-top:8px">'
-    +  '±는 어느 조에서 가장 크게 벗어났는지입니다. 1 미만이면 나눌 수 있는 만큼 나뉜 것입니다.</div></div>';
+    +  '±는 어느 조에서 가장 크게 벗어났는지입니다. 1 미만이면 나눌 수 있는 만큼 나뉜 것입니다. '
+    +  '<b>겹친 짝</b>은 <b>한 조에 하나만</b> 으로 둔 열에서 같은 값이 한 조에 든 짝의 수입니다.</div></div>';
 
   // 사람별
   const sorted = d.distinct.slice().sort((a,b)=>a.v-b.v);

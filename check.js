@@ -505,7 +505,10 @@ function runScale(){
       if(dev > worst){ worst = dev; who = v; }
     }
   }
-  assert(worst <= 1.35, '어떤 값도 한 조에 뭉치지 않는다 (가장 큰 어긋남 '+worst.toFixed(2)+'명, 값 "'+who+'")');
+  // 가중치를 매긴 열은 인원 수가 아니라 **능력 합**으로 맞춘다(runPower 가 그것을 본다).
+  // 그래서 값별 인원 편차는 예전보다 느슨하다 — 2 셋인 조와 3·2·1 인 조는 능력이 같다.
+  // 여기서는 '심하게 뭉치지는 않는가' 만 본다.
+  assert(worst <= 2.0, '어떤 값도 한 조에 심하게 뭉치지 않는다 (가장 큰 어긋남 '+worst.toFixed(2)+'명, 값 "'+who+'")');
   if(mx!==mn){
     assert(avgFor('1',mx) >= avgFor('1',mn), '1 은 큰 조 쪽에 더 많다 ('+avgFor('1',mx).toFixed(1)+' 대 '+avgFor('1',mn).toFixed(1)+')');
   }
@@ -698,6 +701,51 @@ function runCompanion(){
   assert([].concat.apply([], h2.teams).length === C.attendees(h2).length, '그래도 배정은 온전하다');
 }
 
+/* ── 가중치: 클수록 개발 능력 · 조마다 능력 합이 고르게 ── */
+function runPower(){
+  console.log('\n\x1b[1m능력 합이 조마다 고르게\x1b[0m');
+  const pool = ['1','2','3','O','?','2','3','1','O','2'];
+  const rows = [['이름','성별','일행','개발경험']];
+  for(let i=0;i<29;i++) rows.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),
+    i<15?'남':'여', '', pool[i%pool.length]]);
+  C.S = C.blankState();
+  C.takeTable(rows.map(r=>r.join('\t')).join('\n'));
+  const st = C.S;
+  const h = st.sessions.find(x=>x.name==='해커톤');
+  const ci = st.headers.indexOf('개발경험');
+  const rk = (h.rank||{})[ci];
+
+  assert(!!rk, '값이 셋 이상인 열에 가중치가 자동으로 붙는다');
+  assert(rk['3'] > rk['O'] && rk['O'] > rk['2'] && rk['2'] === rk['?'] && rk['?'] > rk['1'],
+    '3 > O > 2 = ? > 1 ('+['3','O','2','?','1'].map(v=>v+':'+rk[v]).join(' ')+')');
+
+  st.sessions = [h]; h.size = 5;
+  C.recompute();
+  const val = (n)=> C.valOf(C.PEOPLE[C.PIDX.get(n)], ci);
+  const power = (g)=> g.reduce((a,n)=> a + (rk[val(n)] || 0), 0);
+  const ps = h.teams.map(power);
+  const lo = Math.min.apply(null,ps), hi = Math.max.apply(null,ps);
+  assert(hi - lo <= 1.5, '조마다 능력 합의 폭이 1.5 이내다 ('+ps.map(x=>Math.round(x*10)/10).join(' · ')+')');
+
+  // 작은 조가 능력에서 손해 보지 않아야 한다 — 사람이 적은 만큼 강한 사람이 와야 한다
+  const Ls = h.teams.map(g=>g.length), mx = Math.max.apply(null,Ls), mn = Math.min.apply(null,Ls);
+  if(mx !== mn){
+    const per = (L)=>{ const t = h.teams.filter(g=>g.length===L); return t.reduce((a,g)=>a+power(g),0)/t.length; };
+    assert(Math.abs(per(mx) - per(mn)) <= 1.5,
+      '작은 조도 능력 합이 비슷하다 ('+mx+'명조 '+per(mx).toFixed(1)+' · '+mn+'명조 '+per(mn).toFixed(1)+')');
+    const head = (L)=>{ const t = h.teams.filter(g=>g.length===L); return t.reduce((a,g)=>a+power(g)/g.length,0)/t.length; };
+    assert(head(mn) >= head(mx) - 0.01,
+      '작은 조의 1인당 능력이 더 높다 ('+mn+'명조 '+head(mn).toFixed(2)+' · '+mx+'명조 '+head(mx).toFixed(2)+')');
+  }
+
+  // 사람이 값을 고치면 그대로 따른다
+  h.rank[ci]['1'] = 0; h.rank[ci]['3'] = 6;
+  C.recompute();
+  const ps2 = h.teams.map(power);
+  assert(Math.max.apply(null,ps2) - Math.min.apply(null,ps2) <= 2.5,
+    '가중치를 바꿔도 다시 고르게 맞춘다 ('+ps2.map(x=>Math.round(x*10)/10).join(' · ')+')');
+}
+
 /* ── 돌리기 ── */
 /* 판 수를 0 으로 주면 무작위 판을 건너뛰고 시나리오만 돌린다 — 고치는 동안 빠르게 본다 */
 const N = Math.max(0, parseInt(process.argv[2] == null ? '6' : process.argv[2], 10) || 0);
@@ -726,6 +774,7 @@ runScale();
 runRooms();
 runPin();
 runCompanion();
+runPower();
 
 console.log('\n' + '─'.repeat(52));
 const slow = times.length ? Math.max.apply(null, times) : 0;

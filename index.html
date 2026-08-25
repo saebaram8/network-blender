@@ -311,6 +311,20 @@ table.tbl tr:last-child td{border-bottom:none}
 }
 .mini.sel{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
 .mini.dim{opacity:.35}
+.wchip{
+  display:inline-flex; align-items:center; gap:3px; background:var(--raise);
+  border:1px solid var(--line2); border-radius:16px; padding:1px 4px 1px 9px; font-size:12.5px;
+}
+.wchip b{font-weight:600}
+.wchip i{
+  font-style:normal; font-family:var(--mono); min-width:2.2em; text-align:center;
+  color:var(--accent); font-weight:700;
+}
+.wchip button{
+  border:none; background:var(--sunk); color:var(--ink2); cursor:pointer;
+  width:19px; height:19px; border-radius:50%; font-size:13px; line-height:1; padding:0;
+}
+.wchip button:hover{background:var(--accent); color:var(--accent-ink)}
 .mini.bias-up{background:var(--gold-soft); border-color:var(--gold-line); color:var(--gold); font-weight:600}
 .mini.bias-dn{background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent); font-weight:600}
 
@@ -484,6 +498,30 @@ const BIAS_W = 20, BIAS_TILT = 2;
    큰 조에 갔다는 것 말고는 아무 도움을 못 받는다.
    불리한 사람이 있는 조에는 유리한 사람이 적어도 하나 있어야 한다. */
 const HELP_PEN = 45;
+/* 값이 셋 이상인 열에는 값마다 **가중치**를 준다 — 클수록 개발 능력이 있다는 뜻이다.
+   그리고 **조마다 가중치의 합을 같게** 맞춘다. 인원 수가 아니라 능력의 합을 고르게 하는 것이다.
+   합을 같게 두면 큰 조에 약한 사람이, 작은 조에 강한 사람이 저절로 간다 —
+   조 크기 기울기를 따로 걸 필요가 없다.
+   기본값: 숫자는 그 숫자, O 는 제일 큰 숫자 바로 아래, ? 는 가운데 숫자.
+   1·2·3·O·? 면 3 > O(2.5) > 2 = ?(2) > 1 이 된다. */
+const POWER_W = 10;
+function defaultRank(vals){
+  const nums = vals.filter(v=>NUMV.test(v)).map(Number);
+  if(nums.length < 2) return null;
+  const hi = Math.max.apply(null, nums), lo = Math.min.apply(null, nums);
+  if(hi === lo) return null;
+  const sorted = nums.slice().sort((a,b)=>a-b);
+  const mid = sorted[Math.floor(sorted.length/2)];
+  const r = {};
+  for(const v of vals){
+    if(NUMV.test(v)) r[v] = Number(v);
+    else {
+      const g = biasGuess(v);
+      r[v] = g < 0 ? hi - 0.5 : (g > 0 ? mid : (hi+lo)/2);
+    }
+  }
+  return r;
+}
 /* 방은 둘뿐이라 한 번 잘못 묶으면 밤새 그대로다.
    이미 만난 사이도, 같은 소속·설계팀도 사실상 금지로 둔다. */
 const GUARD_PEN = 800, ROOM_MEET = 400;
@@ -646,6 +684,22 @@ function buildCtx(names, meet, N, opt){
   const biasGroups = [];
   const dis = new Int32Array(n);
   let disTot = 0;
+  // 순서를 매긴 열 → 사람마다 비중
+  const ranked = new Set();
+  let pw = null, pwTot = 0;
+  for(const ci of biasCols){
+    const rk = (opt.rank || {})[ci];
+    if(!rk || Object.keys(rk).length < 3) continue;
+    ranked.add(ci);
+    if(!pw) pw = new Float64Array(n);
+    const nums = Object.keys(rk).map(k=>rk[k]);
+    const mid = nums.reduce((a,b)=>a+b,0) / nums.length;
+    for(let i=0;i<n;i++){
+      const w = rk[valOf(PEOPLE[PIDX.get(names[i])], ci)];
+      const v = (w == null ? mid : w);        // 목록에 없는 값은 가운데로 본다
+      pw[i] += v; pwTot += v;
+    }
+  }
   for(const ci of biasCols){
     const idOf = new Map(), vals = [];
     const vidx = new Int32Array(n);
@@ -656,7 +710,8 @@ function buildCtx(names, meet, N, opt){
       vidx[i] = k; vals[k].tot++;
     }
     for(let i=0;i<n;i++) if(vals[vidx[i]].sign > 0){ dis[i]++; disTot++; }
-    biasGroups.push({ vidx, vals, buf: new Array(vals.length).fill(0) });
+    biasGroups.push({ vidx, vals, buf: new Array(vals.length).fill(0),
+                      w: ranked.has(ci) ? 3 : BIAS_W, tilt: ranked.has(ci) ? 0 : BIAS_TILT });
   }
   const attrs = [];
   for(const spec of (opt.attrs||[])){
@@ -697,7 +752,9 @@ function buildCtx(names, meet, N, opt){
       if(t != null && t >= 0 && t < K) pinTeam[i] = t;
     });
   }
-  return { n, M, party, attrs, seats, bias, biasGroups, dis, disTot, avgL, guards, pairW, pinTeam, wMeet: opt.wMeet,
+  const nT = Math.max(1, opt.nTeams || 1);
+  return { n, M, party, attrs, seats, bias, biasGroups, dis, disTot, avgL, guards, pairW, pinTeam,
+           pw, pwTarget: pw ? pwTot / nT : 0, wMeet: opt.wMeet,
            // 조 크기를 유·불리로 정하기로 했으면 기회 균등은 그 세션에서 물러선다.
            // 둘 다 조 크기를 밀어대면 서로 상쇄한다.
            wFair: opt.wFair !== undefined ? opt.wFair : (hasBias ? 0 : 0.5),
@@ -720,15 +777,15 @@ function teamCost(ctx, mem){
     const d = L - ctx.avgL;
     let nDis = 0, nAdv = 0;
     for(let k=0;k<ctx.biasGroups.length;k++){
-      const bg = ctx.biasGroups[k], cnt = bg.buf, V = bg.vals.length;
+      const bg = ctx.biasGroups[k], cnt = bg.buf, V = bg.vals.length, bw = bg.w, bt = bg.tilt;
       for(let v=0;v<V;v++) cnt[v] = 0;
       for(let a=0;a<L;a++) cnt[bg.vidx[mem[a]]]++;     // 열마다 한 번만 훑는다
       for(let v=0;v<V;v++){
         const bv = bg.vals[v], g = cnt[v];
-        let tgt = bv.tot * (L + bv.sign * BIAS_TILT * d) / n;
+        let tgt = bv.tot * (L + bv.sign * bt * d) / n;
         if(tgt < 0) tgt = 0; else if(tgt > L) tgt = L;
         const t = g - tgt;
-        c += ctx.wBias * t * t;                // 이차라 한 조에 몰리지도 않는다
+        c += bw * t * t;                       // 이차라 한 조에 몰리지도 않는다
         if(bv.sign > 0) nDis += g; else if(bv.sign < 0) nAdv += g;
       }
     }
@@ -740,6 +797,13 @@ function teamCost(ctx, mem){
       if(tgt < 0) tgt = 0;
       const t = g - tgt;
       c += ctx.wBias * t * t;
+    }
+    // 조마다 전력의 합을 같게 — 인원 수가 아니라 실력의 합이다
+    if(ctx.pw){
+      let pv = 0;
+      for(let a=0;a<L;a++) pv += ctx.pw[mem[a]];
+      const t = pv - ctx.pwTarget;
+      c += POWER_W * t * t;
     }
     // 불리한 사람 수만큼 도울 사람이 있어야 한다. 모자란 만큼 값을 친다 —
     // '유리한 팀'은 조가 큰 것만이 아니라 잘하는 사람이 많은 것이기도 하다.
@@ -833,7 +897,8 @@ function sessCtxOpts(sess, names){
     specs.push({ ci, w: LV_W[cfg.level], mode: cfg.mode || 'spread' });
   }
   return { attrs: specs, wMeet: MEET_W[sess.meet], bias: sess.bias || null,
-           pin: sess.pin || null, nTeams: teamSizes(names.length, sess).length };
+           rank: sess.rank || null, pin: sess.pin || null,
+           nTeams: teamSizes(names.length, sess).length };
 }
 /* 그 사람의 유·불리 값 (+1 불리 · -1 유리 · 0 아무것도 아님) */
 function biasOf(sess, name){
@@ -847,6 +912,24 @@ function biasOf(sess, name){
   return v;
 }
 const hasBias = (sess)=> !!(sess.bias && Object.keys(sess.bias).some(k=>sess.bias[k]));
+const fmt1 = (x)=> (Math.round(x*10)/10).toString();
+/* 그 조의 개발 능력 합. 가중치를 매긴 열이 없으면 null. */
+function powerOf(sess, team){
+  if(!sess.rank || !Object.keys(sess.rank).length) return null;
+  let sum = 0;
+  for(const ci in sess.rank){
+    const rk = sess.rank[ci];
+    const nums = Object.keys(rk).map(k=>rk[k]);
+    const mid = nums.reduce((a,b)=>a+b,0) / (nums.length||1);
+    for(const nm of team){
+      const p = PEOPLE[PIDX.get(nm)];
+      if(!p) continue;
+      const w = rk[valOf(p, +ci)];
+      sum += (w == null ? mid : w);
+    }
+  }
+  return sum;
+}
 /* 유·불리를 정한 (열, 값) 목록 — 불리(+1)가 앞, 유리(-1)가 뒤 */
 function biasMarks(sess){
   const out = [];
@@ -1426,6 +1509,17 @@ function autoDefaults(){
       });
       s.bias = b;
     }
+    // 값이 셋 이상인 열에는 가중치를 깔아준다 (해커톤에서만)
+    if(hack && !s.rank){
+      const r = {};
+      S.headers.forEach((h,ci)=>{
+        if(S.roles[ci] !== 'attr') return;
+        if(!RE_DEV.test(h)) return;
+        const d = defaultRank(colValues(ci));
+        if(d && Object.keys(d).length >= 3) r[ci] = d;
+      });
+      if(Object.keys(r).length) s.rank = r;
+    }
   }
 }
 /* 지금 명단에 없는 열·값을 가리키는 유·불리 키를 걷어낸다.
@@ -1453,6 +1547,16 @@ function pruneBias(){
       if(!okVal) delete s.bias[k]; else live++;
     }
     if(!live) s.bias = undefined;
+  }
+  for(const s of S.sessions){
+    if(!s.rank) continue;
+    for(const ci in s.rank){
+      if(S.roles[ci] !== 'attr'){ delete s.rank[ci]; continue; }
+      const have = colValues(+ci);
+      for(const v in s.rank[ci]) if(have.indexOf(v) < 0) delete s.rank[ci][v];
+      if(Object.keys(s.rank[ci]).length < 3) delete s.rank[ci];
+    }
+    if(!Object.keys(s.rank).length) s.rank = undefined;
   }
 }
 function colValues(ci){
@@ -1529,14 +1633,31 @@ function renderSessions(){
     }
     if(s._bopen){
       const even = sizes.length && Math.min.apply(null,sizes)===Math.max.apply(null,sizes);
+      const anyTilt = ac.some(ci=>!((s.rank||{})[ci])) && Object.keys(s.bias||{}).some(k=>s.bias[k]);
       h += '<div class="fold">'
-        +  '<div class="note" style="margin-bottom:7px">조 인원이 딱 나누어떨어지지 않을 때만 값을 칩니다. '
-        +  '불리한 사람은 손이 많은 조로, 유리한 사람은 손이 적은 조로 갑니다. '
-        +  '눌러서 <b>큰 조 ▸ 작은 조 ▸ 안 봄</b> 순으로 바꿉니다.'
-        +  (even ? ' <span style="color:var(--gold)">지금은 모든 조가 '+sizes[0]+'명이라 이 설정이 하는 일이 없습니다.</span>' : '')
-        +  '</div>';
+        +  (anyTilt
+            ? '<div class="note" style="margin-bottom:7px">값이 둘뿐인 열은 <b>조 크기</b>로 메웁니다 — '
+              + '불리한 쪽은 손이 많은 조로, 유리한 쪽은 손이 적은 조로. '
+              + '눌러서 <b>큰 조 ▸ 작은 조 ▸ 안 봄</b> 순으로 바꿉니다.'
+              + (even ? ' <span style="color:var(--gold)">지금은 모든 조가 '+sizes[0]+'명이라 이 설정이 하는 일이 없습니다.</span>' : '')
+              + '</div>'
+            : '');
       let any = false;
       for(const ci of ac){
+        const rk = (s.rank || {})[ci];
+        if(rk){
+          any = true;
+          h += '<div class="attrrow act"><span class="an">'+esc(S.headers[ci])+'</span><div class="who">'
+            +  colValues(ci).slice().sort((a,b)=>(rk[b]||0)-(rk[a]||0)).map(v=>
+                 '<span class="wchip"><b>'+esc(v)+'</b>'
+                 + '<button data-rank="'+ci+':'+esc(v)+':-">−</button>'
+                 + '<i>'+(rk[v]==null?'—':rk[v])+'</i>'
+                 + '<button data-rank="'+ci+':'+esc(v)+':+">+</button></span>').join('')
+            +  '</div></div>'
+            +  '<div class="note" style="margin:-2px 0 6px">클수록 개발 능력이 있다는 뜻입니다. '
+            +  '조마다 이 값의 <b>합</b>이 같아지도록 나눕니다 — 인원 수가 아니라 능력의 합입니다.</div>';
+          continue;
+        }
         const cfg = s.attrs[ci];
         if(!cfg || !cfg.level) continue;
         any = true;
@@ -1604,6 +1725,18 @@ function renderSessions(){
   b.querySelectorAll('[data-bfold]').forEach(el=>{
     el.onclick = ()=>{ const s=S.sessions[+el.dataset.bfold]; s._bopen = !s._bopen; render(); };
   });
+  b.querySelectorAll('[data-rank]').forEach(el=>{
+    el.onclick = ()=> act(()=>{
+      const d = el.dataset.rank;
+      const i1 = d.indexOf(':'), i2 = d.lastIndexOf(':');
+      const si2 = +el.closest('[data-si]').dataset.si;
+      const ci = +d.slice(0,i1), v = d.slice(i1+1,i2), dir = d.slice(i2+1);
+      const s = S.sessions[si2];
+      if(!s.rank || !s.rank[ci]) return;
+      const cur = s.rank[ci][v] || 0;
+      s.rank[ci][v] = Math.max(0, Math.min(20, cur + (dir==='+' ? 0.5 : -0.5)));
+    });
+  });
   b.querySelectorAll('[data-bias]').forEach(el=>{
     el.onclick = ()=> act(()=>{
       const d = el.dataset.bias;
@@ -1655,11 +1788,20 @@ function renderResult(){
       +  (hi>=0?'<span class="note">이름 옆은 '+esc(S.headers[hi])+'</span>':'')
       +  (nPin ? '<span class="pill warn noprint">📌 '+nPin+'명 고정</span>'
                  + '<button class="btn sm noprint" data-unpinall="'+si+'">고정 풀기</button>' : '')
-      +  '<span class="note noprint">이름을 누르면 그 조에 고정됩니다</span>'
+      +  (function(){
+             const ps = s.teams.map(g=>powerOf(s,g));
+             if(ps[0] == null) return '';
+             const lo = Math.min.apply(null,ps), hi2 = Math.max.apply(null,ps);
+             const cls = (hi2-lo) <= 1.01 ? 'ok' : ((hi2-lo) <= 2.01 ? 'warn' : 'bad');
+             return '<span class="pill '+cls+'">능력 '+fmt1(lo)+'~'+fmt1(hi2)+'</span>';
+           })()
+      +  '<span class="note noprint">이름을 누르거나 끌어다 옮깁니다</span>'
       +  '</div><div class="teams">';
     const marks = biasMarks(s);
     s.teams.forEach((g,i)=>{
-      h += '<div class="team" data-drop="'+si+':'+i+'"><h4><span>'+(i+1)+'조</span><span class="cnt">'+g.length+'명</span></h4>'
+      const pv = powerOf(s, g);
+      h += '<div class="team" data-drop="'+si+':'+i+'"><h4><span>'+(i+1)+'조</span><span class="cnt">'
+        +  g.length+'명'+(pv==null?'':' · 능력 '+fmt1(pv))+'</span></h4>'
         // 불리하다고 표시한 값이 조마다 몇인지 드러낸다 — 몰렸으면 여기서 보인다
         +  (marks.length ? '<div class="bmark">'
              + marks.map(m=>'<i>'+(m.sign>0?'▲':'▼')+'</i>'+esc(m.val)

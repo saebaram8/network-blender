@@ -827,6 +827,80 @@ function runPartyByName(){
     '3 > O > 2 = ? > 1 > X ('+pool.map(v=>v+':'+rk[v]).join(' ')+')');
 }
 
+/* ── 데려온 사람은 동행인으로 세지 않는다 ── */
+/* 실제 명단에서: 칸을 채운 쪽이 동행인이고, 칸에 적힌 사람은 데려온 쪽이다.
+   류지환은 둘을 데려왔고 정철인은 하나를 데려왔지만 둘 다 핸디캡이 아니다. */
+const ROSTER = `참가자\t성별\t설계팀\t동행인\t개발 경험
+김창준\t남\t설계팀\t\t
+고주형\t남\t설계팀\t\t3
+김병호\t남\t설계팀\t\t3
+박지수\t남\t설계팀\t\t3
+정철인\t남\t설계팀\t\t2
+류지환\t남\t\t\t3
+이수찬\t남\t\t\t3
+김계옥\t여\t\t\tO
+이상현\t남\t\t\t3
+정재용\t남\t\t\tO
+안상완\t남\t\t\t3
+김기은\t여\t\t\t?
+김범석\t남\t\t김기은\t?
+임수진\t여\t\t류지환\tO
+서명석\t남\t\t\tO
+오시영\t여\t\t\tO
+전민제\t남\t\t\t3
+김민식\t남\t\t\t3
+정유진\t여\t\t김민식\tO
+박혜빈\t여\t\t류지환\tO
+신일진\t여\t\t\t?
+전윤한\t남\t\t\t2
+권상호\t남\t\t\t2
+임동준\t남\t\t\tO
+김의진\t남\t\t\tO
+허신영\t여\t\t\t3
+서민규\t남\t\t\tO
+김진원\t여\t\t\tO
+이은주\t여\t\t정철인\tX
+김성호\t남\t\t\t2
+송홍기\t남\t\t\t2`;
+
+function runGuestCount(){
+  console.log('\n\x1b[1m데려온 사람은 동행인으로 세지 않는다\x1b[0m');
+  C.S = C.blankState();
+  C.takeTable(ROSTER);
+  const st = C.S;
+  const P = (n)=> C.PEOPLE[C.PIDX.get(n)];
+  const isGuest = (n)=> C.valOf(P(n), C.PARTY_CI) === '동행';
+
+  const guests = C.PEOPLE.filter(p=> C.valOf(p, C.PARTY_CI)==='동행').map(p=>p.name);
+  assert(guests.length === 5, '동행인은 다섯이다 ('+guests.join(' ')+')');
+  const hosts = ['류지환','정철인','김기은','김민식'];
+  const wrong = hosts.filter(isGuest);
+  assert(wrong.length === 0, '데려온 넷은 동행이 아니다 ('+(wrong.join(' ')||'0명')+')');
+  assert(isGuest('임수진') && isGuest('박혜빈') && isGuest('이은주'),
+    '데려와진 쪽은 동행이다');
+
+  // 묶음은 그대로다 — 데려온 사람도 제 동행인과 같은 조에 들면 안 된다
+  assert(P('류지환').party && P('류지환').party === P('임수진').party
+      && P('임수진').party === P('박혜빈').party, '데려온 사람도 묶음에는 함께 든다');
+
+  st.sessions.forEach(s=>{ s.mode='size'; s.size=5; });
+  C.recompute();
+  let same = 0;
+  for(const s of st.sessions) for(const g of (s.teams||[])){
+    for(let a=0;a<g.length;a++) for(let b=a+1;b<g.length;b++){
+      const pa = P(g[a]), pb = P(g[b]);
+      if(pa.party && pa.party === pb.party) same++;
+    }
+  }
+  assert(same === 0, '데려온 사람과 그 동행인이 한 조에 든 적이 없다 ('+same+'쌍)');
+
+  // 해커톤에서 동행인이 골고루 흩어진다 — 다섯을 여섯 조에 나누므로 조마다 0~1
+  const hack = st.sessions.find(x=>x.name==='해커톤');
+  const cnt = (hack.teams||[]).map(g=> g.filter(n=> isGuest(n)).length);
+  assert(Math.max.apply(null,cnt) <= 1,
+    '해커톤에서 한 조에 동행인이 둘 이상 몰리지 않는다 ('+cnt.join('/')+')');
+}
+
 /* ── 돌리기 ── */
 /* 판 수를 0 으로 주면 무작위 판을 건너뛰고 시나리오만 돌린다 — 고치는 동안 빠르게 본다 */
 const N = Math.max(0, parseInt(process.argv[2] == null ? '6' : process.argv[2], 10) || 0);
@@ -857,6 +931,7 @@ runPin();
 runCompanion();
 runPower();
 runPartyByName();
+runGuestCount();
 
 console.log('\n' + '─'.repeat(52));
 const slow = times.length ? Math.max.apply(null, times) : 0;

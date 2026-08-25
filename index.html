@@ -603,7 +603,10 @@ function buildPeople(){
     let party = pc>=0 ? (row[pc]||'').trim() : '';
     /* 제 이름을 제 일행 칸에 적은 줄이 있다. 그대로 두면 자기가 자기 동행으로 뜬다. */
     if(party === nm || party === raw) party = '';
-    PEOPLE.push({ name:nm, party, vals:row.slice() });
+    /* 칸을 채운 쪽이 동행인이다("나는 ○○의 동행"). 지목당한 쪽은 **데려온 사람**이라
+       핸디캡이 아니다 — 묶음(같은 조 금지)에는 함께 들지만 동행 수로는 세지 않는다.
+       linkPartiesByName 이 party 를 묶음 키로 덮어쓰므로 지금 적어둔다. */
+    PEOPLE.push({ name:nm, party, guest: party !== '', vals:row.slice() });
     PIDX.set(nm, PEOPLE.length-1);
   }
   linkPartiesByName();
@@ -650,7 +653,7 @@ function partnersOf(p){
   return PEOPLE.filter(q=> q!==p && q.party===p.party).map(q=>q.name).sort(byName);
 }
 const valOf = (p, ci)=>{
-  if(ci === PARTY_CI) return p.party ? '동행' : '본인';
+  if(ci === PARTY_CI) return p.guest ? '동행' : '본인';
   const v=(p.vals[ci]||'').trim(); return v===''? '—' : v;
 };
 const attrCols = ()=> S.roles.map((r,i)=>r==='attr'?i:-1).filter(i=>i>=0);
@@ -1352,8 +1355,10 @@ function renderRoster(){
           who.get(p.party).push(p.name);
         }
         const list = Array.from(who.values()).filter(a=>a.length>1);
+        const gN = PEOPLE.filter(q=>!S.out[q.name] && q.guest).length;
         h += '<span class="pill ok">'+sz.length+'묶음 · '+sz.reduce((a,b)=>a+b,0)+'명</span>'
-          +  '<span class="note">가장 큰 묶음 '+big+'명 — 이 사람들끼리는 같은 조에 넣지 않습니다</span>'
+          +  '<span class="note">가장 큰 묶음 '+big+'명 — 이 사람들끼리는 같은 조에 넣지 않습니다 · '
+          +  '핸디캡으로 세는 동행인은 '+gN+'명입니다(데려온 분은 빼고)</span>'
           +  '</div><div class="row" style="margin-top:4px"><span class="lbl"></span><div class="who">'
           +  list.map(a=>'<span class="mini" style="cursor:default">'+esc(sortNames(a).join(' · '))+'</span>').join('');
       }
@@ -2449,7 +2454,7 @@ globalThis.__CHECK__ = {
   blankState, newSession, seedSessions, takeTable, recompute, diagnose,
   attendees, teamSizes, attrCols, valOf, activeNames, demoRoster,
   parseTable, resultTSV, computeRooms, roomPool, pairSizes,
-  autoDefaults, biasOf, hasBias, colValues, buildPeople, partnersOf
+  autoDefaults, biasOf, hasBias, colValues, buildPeople, partnersOf, PARTY_CI
 };
 boot();
 </script>

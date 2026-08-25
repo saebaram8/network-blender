@@ -292,13 +292,25 @@ function runTSV(){
   st.sessions = [C.newSession('A'), C.newSession('B')];
   st.sessions.forEach(s=>s.size=4);
   C.recompute();
+  C.S.rooms.labels = { 0:'302호' };
+  C.recompute();
   const tsv = C.resultTSV();
   const lines = tsv.split('\n');
-  const want = C.activeNames().length + 1;
-  assert(lines.length===want, '줄 수가 사람 수 + 머리 한 줄 ('+lines.length+'/'+want+')');
-  const w = lines[0].split('\t').length;
-  assert(lines.every(l=>l.split('\t').length===w), '모든 줄의 칸 수가 같다');
-  assert(lines[0].indexOf('숙박')>=0, '숙박 열이 있다');
+  const blank = lines.indexOf('');
+  const top = lines.slice(0, blank<0 ? lines.length : blank);
+  assert(top.length === C.activeNames().length + 1,
+    '첫 덩이가 사람 수 + 머리 한 줄 ('+top.length+'/'+(C.activeNames().length+1)+')');
+  const w = top[0].split('\t').length;
+  assert(top.every(l=>l.split('\t').length===w), '첫 덩이의 칸 수가 고르다');
+  assert(top[0].split('\t')[0]==='이름' && top[0].indexOf('숙박')>=0, '이름과 숙박 열이 있다');
+  // 속내는 안 나온다
+  for(const h of ['일행','성별','소속','개발경험','사전교육'])
+    assert(top[0].indexOf(h)<0, '"'+h+'" 은 내보내지 않는다');
+  assert(tsv.indexOf('강제')<0 && tsv.indexOf('묶기')<0, '방을 묶은 것인지는 내보내지 않는다');
+  // 세션별 인원 배치도 있다
+  assert(lines.indexOf('A')>=0 && lines.indexOf('B')>=0, '세션마다 인원 배치가 붙는다');
+  assert(lines.some(l=>l.indexOf('1조\t')===0), '조마다 이름이 나열된다');
+  assert(lines.indexOf('숙박')>=0 && lines.some(l=>l.indexOf('302호\t')===0), '방 번호를 적은 대로 쓴다');
 }
 
 /* ── 홀수 인원 검사 ── */
@@ -526,6 +538,22 @@ function runRooms(){
   st.rooms.list.forEach((r,i)=> r.who.forEach(n=> r2.set(n,i)));
   assert(r2.get(A) !== r2.get(B), '"같은 방 안 됨" 을 지켰다 ('+A+' · '+B+')');
   assert(r2.get(X) === r2.get(Y), '"되도록 같은 방" 을 지켰다 ('+X+' · '+Y+')');
+  // 사람이 말한 희망이 자동 규칙(같은 소속·이미 만남)을 이겨야 한다
+  const sameOrgPair = (()=>{
+    for(let a=0;a<men.length;a++) for(let b=a+1;b<men.length;b++)
+      if(C.valOf(C.PEOPLE[C.PIDX.get(men[a])], gi) === C.valOf(C.PEOPLE[C.PIDX.get(men[b])], gi))
+        return [men[a], men[b]];
+    return null;
+  })();
+  if(sameOrgPair){
+    st.rooms.avoid = []; st.rooms.prefer = [sameOrgPair];
+    C.recompute();
+    const r3 = new Map();
+    st.rooms.list.forEach((r,i)=> r.who.forEach(n=> r3.set(n,i)));
+    assert(r3.get(sameOrgPair[0]) === r3.get(sameOrgPair[1]),
+      '"되도록 같은 방" 이 같은 소속 규칙을 이긴다 ('+sameOrgPair.join(' · ')+')');
+    st.rooms.prefer = [];
+  }
 
   // 지킬 열은 이름으로 들고 있으니 열 차례가 바뀌어도 살아 있어야 한다
   const rows = makeRoster(12, 16, 0).split('\n').map(l=>l.split('\t'));
@@ -539,6 +567,54 @@ function runRooms(){
   for(const r of C.S.rooms.list) for(let a=0;a<r.who.length;a++) for(let b=a+1;b<r.who.length;b++)
     if(C.valOf(C.PEOPLE[C.PIDX.get(r.who[a])], gi2) === C.valOf(C.PEOPLE[C.PIDX.get(r.who[b])], gi2)) same2++;
   assert(same2===0, '열이 옮겨간 뒤에도 같은 소속이 한 방에 없다 ('+same2+'쌍)');
+}
+
+/* ── 특정 사람을 특정 조에 못 박기 ── */
+function runPin(){
+  console.log('\n\x1b[1m못 박은 사람은 그 조에 남는다\x1b[0m');
+  C.S = C.blankState();
+  C.takeTable(makeRoster(12, 17, 2));
+  const st = C.S;
+  st.sessions = st.sessions.filter(x=>x.name==='해커톤');
+  const h = st.sessions[0]; h.size = 5;
+  C.recompute();
+
+  // 1조에 셋, 3조에 둘을 못 박는다
+  const t0 = h.teams[0].slice(0,3), t2 = h.teams[2].slice(0,2);
+  h.pin = {}; t0.forEach(n=>h.pin[n]=0); t2.forEach(n=>h.pin[n]=2);
+
+  let held = 0, rounds = 10;
+  for(let r=0;r<rounds;r++){
+    h.seed = Math.floor(Math.random()*1e6);
+    C.recompute();
+    const okAll = t0.every(n=>h.teams[0].indexOf(n)>=0) && t2.every(n=>h.teams[2].indexOf(n)>=0);
+    if(okAll) held++;
+  }
+  assert(held===rounds, '열 번 다시 섞어도 못 박은 자리를 지킨다 ('+held+'/'+rounds+')');
+
+  // 나머지는 진짜로 섞이는가 — 못 박은 것만 지키고 굳어버리면 곤란하다
+  const snap = ()=> JSON.stringify(h.teams.map(g=>g.slice().sort()));
+  h.seed = 111; C.recompute(); const a = snap();
+  h.seed = 222; C.recompute(); const b = snap();
+  assert(a !== b, '못 박지 않은 사람은 그대로 섞인다');
+
+  // 조 전체를 못 박아도 죽지 않는가 (자유 자리가 0인 조)
+  h.pin = {}; h.teams[1].forEach(n=>h.pin[n]=1);
+  h.seed = 333; C.recompute();
+  const full = h.teams[1].every(n=>h.pin[n]===1);
+  assert(full && C.attendees(h).length === [].concat.apply([],h.teams).length,
+    '한 조를 통째로 못 박아도 배정이 온전하다');
+
+  // 일행·유불리 같은 다른 약속을 깨뜨리지 않는가
+  const d = C.diagnose();
+  const partyBad = d.violations.filter(v=>v.indexOf('일행')>=0).length;
+  assert(partyBad===0, '못 박아도 일행은 여전히 갈라진다');
+
+  // 사람이 빠지면 못 박은 것도 걷힌다
+  const gone = Object.keys(h.pin)[0];
+  st.out[gone] = true;
+  C.recompute();
+  assert(!h.pin || h.pin[gone]==null, '빠진 사람의 고정은 걷힌다 ('+gone+')');
 }
 
 /* ── 돌리기 ── */
@@ -566,6 +642,7 @@ runOdd();
 runBias();
 runScale();
 runRooms();
+runPin();
 
 console.log('\n' + '─'.repeat(52));
 const slow = Math.max.apply(null, times);

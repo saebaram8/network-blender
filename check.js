@@ -783,6 +783,21 @@ function runPartyByName(){
   const p = (n)=> C.PEOPLE[C.PIDX.get(n)].party;
   assert(p('가') === p('나') && p('나') === p('다'), '지목한 사람이 이미 묶음에 있으면 그 묶음에 든다 ('+p('다')+')');
 
+  // 제 이름을 제 일행 칸에 적은 줄 · 서로를 지목한 줄 — 자기가 자기 동행이 되면 안 된다
+  const rowsSelf = [['이름','성별','일행']];
+  rowsSelf.push(['갑','남','갑']);                             // 제 이름
+  rowsSelf.push(['을','남','병'], ['병','남','을']);            // 서로 지목
+  for(let i=0;i<9;i++) rowsSelf.push([NAMES_B[i],'남','']);
+  C.S = C.blankState();
+  C.takeTable(rowsSelf.map(r=>r.join('\t')).join('\n'));
+  const PS = (n)=> C.PEOPLE[C.PIDX.get(n)];
+  assert(!PS('갑').party, '제 이름을 적은 칸은 일행이 아니다 ('+PS('갑').party+')');
+  assert(!!PS('을').party && PS('을').party === PS('병').party,
+    '서로 지목한 둘은 한 묶음이다 ('+PS('을').party+' / '+PS('병').party+')');
+  let selfPt = 0, selfWho = [];
+  for(const q of C.PEOPLE) if(C.partnersOf(q).indexOf(q.name) >= 0){ selfPt++; selfWho.push(q.name); }
+  assert(selfPt === 0, '아무도 제 동행으로 나오지 않는다 ('+(selfWho.join(',')||'0명')+')');
+
   // X = 0.5, ? = 가운데
   const rows3 = [['이름','성별','개발경험']];
   const pool = ['1','2','3','O','?','X'];

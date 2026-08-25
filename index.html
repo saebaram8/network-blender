@@ -596,10 +596,13 @@ function buildPeople(){
   for(const row of S.rows){
     let nm = (row[nameCol]||'').trim();
     if(!nm) continue;
+    const raw = nm;
     if(seen.has(nm)){ const k = seen.get(nm)+1; seen.set(nm,k); nm = nm+' ('+k+')'; }
     else seen.set(nm,1);
     const pc = S.roles.indexOf('party');
-    const party = pc>=0 ? (row[pc]||'').trim() : '';
+    let party = pc>=0 ? (row[pc]||'').trim() : '';
+    /* 제 이름을 제 일행 칸에 적은 줄이 있다. 그대로 두면 자기가 자기 동행으로 뜬다. */
+    if(party === nm || party === raw) party = '';
     PEOPLE.push({ name:nm, party, vals:row.slice() });
     PIDX.set(nm, PEOPLE.length-1);
   }
@@ -616,15 +619,35 @@ const sortNames = (arr)=> arr.slice().sort(byName);
    값이 같지 않아 남남으로 보이고, 둘이 같은 조에 들어가 버린다.
    이름으로 적힌 것은 그 사람과 한 묶음으로 잇는다. */
 function linkPartiesByName(){
-  const byNm = new Map();
-  for(const p of PEOPLE) byNm.set(p.name, p);
-  for(const p of PEOPLE){
-    if(!p.party) continue;
-    const host = byNm.get(p.party);
-    if(!host || host === p) continue;
-    if(host.party) p.party = host.party;            // 그 사람이 이미 묶음에 있으면 거기로
-    else { const key = '·' + host.name; host.party = key; p.party = key; }
+  const n = PEOPLE.length;
+  /* 서로를 가리키는 줄(갑→을, 을→갑)이 있어 한 방향으로 훑으면 키가 제 이름이 된다.
+     묶는 일은 방향이 없으므로 union-find 로 한다. */
+  const par = Array.from({length:n}, (_,i)=>i);
+  const find = (x)=>{ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x]; } return x; };
+  const uni  = (a,b)=>{ a=find(a); b=find(b); if(a!==b) par[Math.max(a,b)] = Math.min(a,b); };
+  const byNm = new Map(), byVal = new Map();
+  PEOPLE.forEach((p,i)=>{ if(!byNm.has(p.name)) byNm.set(p.name, i); });
+  PEOPLE.forEach((p,i)=>{
+    if(!p.party) return;
+    if(byVal.has(p.party)) uni(i, byVal.get(p.party));   // 같은 값을 적은 사람끼리
+    else byVal.set(p.party, i);
+    const h = byNm.get(p.party);                         // 이름을 적었으면 그 사람과
+    if(h!=null && h!==i) uni(i, h);
+  });
+  const size = new Map();
+  for(let i=0;i<n;i++){ const r=find(i); size.set(r, (size.get(r)||0)+1); }
+  /* 둘 이상만 묶음 키를 받는다. 혼자뿐인 값은 적힌 그대로 둔다 — 명단에 없는
+     사람과 온 경우라 여전히 '동행'이고, 위 진단 줄이 몇 개인지 알려준다. */
+  for(let i=0;i<n;i++){
+    const r = find(i);
+    if(size.get(r) > 1) PEOPLE[i].party = '·' + PEOPLE[r].name;
   }
+}
+/* 화면에 보이는 일행은 묶음 키('·이름', 속에서만 쓴다)가 아니라 **같이 온 사람들**이다.
+   키를 그대로 내보이면 묶음의 대표가 제 이름을 제 동행으로 달고 있게 된다. */
+function partnersOf(p){
+  if(!p.party) return [];
+  return PEOPLE.filter(q=> q!==p && q.party===p.party).map(q=>q.name).sort(byName);
 }
 const valOf = (p, ci)=>{
   if(ci === PARTY_CI) return p.party ? '동행' : '본인';
@@ -1354,8 +1377,10 @@ function renderRoster(){
       +  '<div class="lbl" style="margin-bottom:8px">참가자 <span class="note noprint">— 이름을 누르면 워크샵 전체에서 빠집니다</span></div>'
       +  '<div class="chips">'
       +  PEOPLE.slice().sort((a,b)=>byName(a.name,b.name))
-           .map(p=>'<button class="chip'+(S.out[p.name]?' off':'')+'" data-out="'+esc(p.name)+'">'
-      +     esc(p.name) + (p.party?'<span class="pt">'+esc(p.party)+'</span>':'') + '</button>').join('')
+           .map(p=>{ const pt = partnersOf(p);
+             return '<button class="chip'+(S.out[p.name]?' off':'')+'" data-out="'+esc(p.name)+'">'
+               + esc(p.name) + (pt.length?'<span class="pt">'+esc(pt.join(' · '))+'</span>':'')
+               + '</button>'; }).join('')
       +  '</div></div>';
   }
   b.innerHTML = h;
@@ -2424,7 +2449,7 @@ globalThis.__CHECK__ = {
   blankState, newSession, seedSessions, takeTable, recompute, diagnose,
   attendees, teamSizes, attrCols, valOf, activeNames, demoRoster,
   parseTable, resultTSV, computeRooms, roomPool, pairSizes,
-  autoDefaults, biasOf, hasBias, colValues, buildPeople
+  autoDefaults, biasOf, hasBias, colValues, buildPeople, partnersOf
 };
 boot();
 </script>

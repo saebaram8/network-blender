@@ -506,19 +506,19 @@ const HELP_PEN = 45;
    1·2·3·O·? 면 3 > O(2.5) > 2 = ?(2) > 1 이 된다. */
 const POWER_W = 10;
 function defaultRank(vals){
-  const nums = vals.filter(v=>NUMV.test(v)).map(Number);
+  // **서로 다른** 숫자만 본다. 사람 수로 중앙값을 잡으면 3 이 많다는 이유로
+  // '?' 가 최상위로 올라간다 — 실제 명단에서 그렇게 났다.
+  const nums = Array.from(new Set(vals.filter(v=>NUMV.test(v)).map(Number))).sort((a,b)=>b-a);
   if(nums.length < 2) return null;
-  const hi = Math.max.apply(null, nums), lo = Math.min.apply(null, nums);
-  if(hi === lo) return null;
-  const sorted = nums.slice().sort((a,b)=>a-b);
-  const mid = sorted[Math.floor(sorted.length/2)];
+  const hi = nums[0], second = nums[1];
   const r = {};
   for(const v of vals){
     if(NUMV.test(v)){ r[v] = Number(v); continue; }
-    // '?' 는 모른다는 뜻이라 가운데로 둔다. 'X' 처럼 없다고 못박은 값은 제일 아래다.
-    if(/^[?？]+$/.test(v)){ r[v] = mid; continue; }
+    if(v === '—') continue;                    // 빈 칸은 값을 매기지 않는다 — 평균으로 떨어진다
+    if(/^[?？]+$/.test(v)){ r[v] = second; continue; }   // 모른다 → O 바로 아래 자리
     const g = biasGuess(v);
-    r[v] = g < 0 ? hi - 0.5 : (g > 0 ? Math.max(0, lo - 0.5) : (hi+lo)/2);
+    if(g < 0) r[v] = hi - 0.5;                 // 있다·가능·O → 제일 위 바로 아래
+    else if(g > 0) r[v] = 0.5;                 // 없다·불가·X → 바닥
   }
   return r;
 }
@@ -661,7 +661,10 @@ function buildCtx(names, meet, N, opt){
   const loc = names.map(nm=>PIDX.get(nm));
   const M = new Int32Array(n*n);
   for(let a=0;a<n;a++) for(let b=a+1;b<n;b++){
-    const v = meet[loc[a]*N + loc[b]];
+    let v = meet[loc[a]*N + loc[b]];
+    // 방에서는 '아는 사이인가' 가 예·아니오 문제다. 제곱으로 두면 두 번 만난 사이가
+    // 1600 이 되어, 사람이 직접 말한 '되도록 같은 방'(1500)을 이겨버린다.
+    if(opt.flatMeet && v > 1) v = 1;
     M[a*n+b]=v; M[b*n+a]=v;
   }
   const party = names.map(nm=> PEOPLE[PIDX.get(nm)].party || '');
@@ -1086,7 +1089,7 @@ function computeRooms(){
     const sizes = pairSizes(names.length, R.odd);
     if(!sizes.length) continue;
     // 방은 모두 2인실이라 기회를 따질 것이 없다 — 안 만난 사이인지만 본다
-    const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:ROOM_MEET, wFair:0, nTeams: sizes.length,
+    const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:ROOM_MEET, wFair:0, flatMeet:true, nTeams: sizes.length,
                                             guards: roomGuards(), pairs: roomPairs(),
                                             noParty: R.allowParty ? false : true });
     const best = solve(ctx, sizes, (R.seed|0) + gi*31337, 9);

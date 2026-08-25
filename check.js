@@ -791,6 +791,23 @@ function runPartyByName(){
   C.takeTable(rows3.map(r=>r.join('\t')).join('\n'));
   const rk = C.S.sessions.find(x=>x.name==='해커톤').rank[C.S.headers.indexOf('개발경험')];
   assert(rk['X'] === 0.5, 'X 는 0.5 다 ('+rk['X']+')');
+  // 실제 명단에는 1 이 없고 2·3 뿐이었다. 게다가 3 이 두 배 많아
+  // 사람 수로 중앙값을 잡으니 '?' 가 3(최상위)으로 올라갔다.
+  const rows4 = [['이름','성별','개발경험']];
+  const p4 = ['3','3','3','2','O','?','X','3','2','3'];      // 3 이 2 보다 많다
+  for(let i=0;i<24;i++) rows4.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),'남',p4[i%p4.length]]);
+  C.S = C.blankState();
+  C.takeTable(rows4.map(r=>r.join('\t')).join('\n'));
+  const rk4 = C.S.sessions.find(x=>x.name==='해커톤').rank[C.S.headers.indexOf('개발경험')];
+  assert(rk4['3'] > rk4['O'] && rk4['O'] > rk4['?'] && rk4['?'] === rk4['2'] && rk4['2'] > rk4['X'],
+    '1 이 없고 3 이 많아도 3 > O > 2 = ? > X ('+['3','O','2','?','X'].map(v=>v+':'+rk4[v]).join(' ')+')');
+  // 빈 칸은 값을 매기지 않는다 — 매기면 O 와 동률이 되어버렸다
+  const rows5 = [['이름','성별','개발경험']];
+  for(let i=0;i<24;i++) rows5.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),'남', i===0?'':p4[i%p4.length]]);
+  C.S = C.blankState();
+  C.takeTable(rows5.map(r=>r.join('\t')).join('\n'));
+  const rk5 = C.S.sessions.find(x=>x.name==='해커톤').rank[C.S.headers.indexOf('개발경험')];
+  assert(rk5['—'] == null, '빈 칸에는 가중치를 매기지 않는다');
   assert(rk['3'] > rk['O'] && rk['O'] > rk['2'] && rk['2'] === rk['?'] && rk['?'] > rk['1'] && rk['1'] > rk['X'],
     '3 > O > 2 = ? > 1 > X ('+pool.map(v=>v+':'+rk[v]).join(' ')+')');
 }

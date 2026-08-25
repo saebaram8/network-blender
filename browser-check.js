@@ -134,6 +134,64 @@ const assert = (c,t)=> c ? ok(t) : bad(t);
     await page.close();
   }
 
+  // ── 온라인 저장: 만들고 → 저장하고 → 다른 PC 에서 열어본다 ──
+  console.log('\n\x1b[1m온라인 저장 왕복\x1b[0m');
+  const cp = require('child_process');
+  const os = require('os');
+  cp.execSync('node ' + path.join(__dirname,'build-artifact.js'), { cwd: __dirname, stdio:'ignore' });
+  const ART = path.join(__dirname, 'artifact.html');
+  assert(fs.existsSync(ART), 'artifact.html 을 만들었다');
+
+  const fake = ()=>{ window.__published = null;
+    window.claude = { use:(n)=> Promise.resolve(n==='artifact'
+      ? { publish:(h)=>{ window.__published = h; return Promise.resolve({status:'ok'}); } } : null) }; };
+
+  const roster = ['이름\t성별\t동행인\t개발 경험',
+    '가\t남\t\t3','나\t남\t\t2','다\t여\t가\tO','라\t남\t\t?','마\t여\t\tX',
+    '바\t남\t\t3','사\t여\t\t2','아\t남\t\tO','자\t여\t\t3','차\t남\t\t2',
+    '카\t여\t\tO','타\t남\t\t3'].join('\n');
+
+  const p1 = await browser.newPage();
+  await p1.addInitScript(fake);
+  await p1.goto('file://' + ART);
+  await p1.evaluate(()=>localStorage.clear()); await p1.reload(); await p1.waitForTimeout(400);
+  await p1.evaluate(t=>window.__CHECK__.takeTable(t), roster);
+  await p1.waitForTimeout(700);
+  await p1.evaluate(()=>{ const C=window.__CHECK__; C.S.rooms.labels={0:'302호'}; C.S.sessions[0].name='아이스브레이킹'; C.recompute(); });
+  await p1.waitForTimeout(400);
+  assert(await p1.evaluate(()=>getComputedStyle(document.getElementById('b-cloud')).display) !== 'none',
+    'claude.ai 로 열면 온라인 저장 단추가 보인다');
+  await p1.click('#b-cloud'); await p1.waitForTimeout(900);
+  const pub = await p1.evaluate(()=>window.__published || '');
+  assert(pub.length > 100000 && pub.indexOf('id="mixer-state"') >= 0 && pub.indexOf('id="mixer-tpl"') >= 0,
+    '저장이 온전한 문서를 만든다 ('+Math.round(pub.length/1024)+'KB · 저장덩이·품은소스 모두 있음)');
+  const tmp = path.join(os.tmpdir(), 'mixer-pub-check.html');
+  fs.writeFileSync(tmp, pub);
+  await p1.close();
+
+  // 다른 PC — 아무것도 없는 새 브라우저
+  const ctx2 = await browser.newContext();
+  const p2 = await ctx2.newPage();
+  p2.on('pageerror', e=>errors.push('online: '+e.message));
+  await p2.addInitScript(fake);
+  await p2.goto('file://' + tmp);
+  await p2.evaluate(()=>localStorage.clear()); await p2.reload(); await p2.waitForTimeout(1100);
+  const got = await p2.evaluate(()=>{ const C=window.__CHECK__;
+    return { n:C.PEOPLE.length, sess:C.S.sessions.map(x=>x.name).join(','),
+             lab:(C.S.rooms.labels||{})[0], saved:C.S.savedAt }; });
+  assert(got.n === 12, '다른 PC 에서 명단이 그대로 뜬다 ('+got.n+'명)');
+  assert(got.sess.indexOf('아이스브레이킹') === 0, '세션 이름까지 따라온다 ('+got.sess+')');
+  assert(got.lab === '302호', '방 번호까지 따라온다 ('+got.lab+')');
+  assert(!!got.saved, '저장 시각이 남는다 ('+got.saved+')');
+  await p2.click('#b-cloud'); await p2.waitForTimeout(900);
+  const pub2 = await p2.evaluate(()=>window.__published || '');
+  assert(pub2.length > 100000
+      && pub2.indexOf('id="mixer-tpl"') >= 0
+      && pub2.indexOf('id="mixer-state"') >= 0,
+    '거기서 다시 저장해도 이어진다 ('+Math.round(pub2.length/1024)+'KB)');
+  await ctx2.close();
+  try{ fs.unlinkSync(tmp); }catch(e){}
+
   await browser.close();
   console.log('\n' + '─'.repeat(52));
   if(errors.length){ errors.forEach(e=>bad('콘솔 오류 — '+e)); }

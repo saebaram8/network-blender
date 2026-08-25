@@ -2276,25 +2276,55 @@ async function initCloud(){
   if(btn && ARTIFACT) btn.style.display = '';
   render();
 }
+/* 제 소스를 어디서 얻나 —
+   ① 페이지가 품고 있는 판(`mixer-tpl`, base64). 통신이 없어 제일 튼튼하다
+   ② 없으면 제 주소를 다시 받아본다 (예전 방식, 뷰어에 따라 막힐 수 있다) */
+async function pageSource(){
+  const tpl = document.getElementById('mixer-tpl');
+  if(tpl && tpl.textContent.trim()){
+    const b64 = tpl.textContent.trim();
+    const app = new TextDecoder().decode(Uint8Array.from(atob(b64), c=>c.charCodeAt(0)));
+    return { app, b64 };
+  }
+  const res = await fetch(location.href, { cache:'no-store' });
+  if(!res.ok) throw new Error('소스를 받지 못했습니다 ('+res.status+')');
+  return { app: await res.text(), b64: null };
+}
+function buildDoc(app, b64, json){
+  const state = '<script id="mixer-state" type="application/json">' + json + '<' + '/script>';
+  if(b64 == null){
+    // 통째로 받아온 판이라 이미 온전한 문서다 — 상태 덩이만 갈아끼운다
+    if(STATE_RE.test(app)) return app.replace(STATE_RE, state);
+    if(/<\/body>/i.test(app)) return app.replace(/<\/body>/i, state + '</body>');
+    return app + state;
+  }
+  // 품고 있던 판으로 문서를 새로 짠다. 품은 판도 그대로 다시 넣어야 다음에도 저장된다.
+  // **덩이는 앱보다 앞에 둔다** — 뒤에 두면 boot() 이 돌 때 파서가 아직 안 만들어서 못 읽는다.
+  const tpl = '<script id="mixer-tpl" type="text/plain">' + b64 + '<' + '/script>';
+  return '<!doctype html>\n<html lang="ko"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    + '<title>만남 배분기</title></head>\n<body>\n'
+    + state + '\n' + tpl + '\n' + app + '\n</body></html>';
+}
 async function saveOnline(){
   if(!ARTIFACT){ toast('온라인 저장은 claude.ai 에서 열었을 때만 됩니다'); return; }
-  toast('올리는 중입니다…');
+  const btn = $('b-cloud');
+  if(btn){ btn.disabled = true; btn.textContent = '올리는 중…'; }
   try{
-    const res = await fetch(location.href, { cache:'no-store' });
-    if(!res.ok) throw new Error('소스를 못 받았습니다 ('+res.status+')');
-    let html = await res.text();
+    const { app, b64 } = await pageSource();
     S.savedAt = new Date().toISOString().slice(0,16).replace('T',' ');
     const json = JSON.stringify(stripDerived(S)).replace(/</g, '\\u003c');
-    const block = '<script id="mixer-state" type="application/json">' + json + '<' + '/script>';
-    if(STATE_RE.test(html)) html = html.replace(STATE_RE, block);
-    else if(/<\/head>/i.test(html)) html = html.replace(/<\/head>/i, block + '</head>');
-    else html = html.replace(/<body[^>]*>/i, m => m + block);
+    const html = buildDoc(app, b64, json);
+    if(html.length < 20000) throw new Error('만들어진 문서가 너무 짧습니다');
+    if(html.indexOf('id="mixer-state"') < 0) throw new Error('저장 덩이가 들어가지 않았습니다');
     save();
     const r = await ARTIFACT.publish(html);
     if(r && r.status === 'conflict') toast('다른 창에서 먼저 저장했습니다 — 그쪽 판으로 새로고침됩니다');
-    else toast('온라인에 저장했습니다');
+    else toast('온라인에 저장했습니다 (' + S.savedAt + ')');
   }catch(e){
-    toast('온라인 저장에 실패했습니다 — ' + (e && e.message ? e.message : '알 수 없는 까닭'));
+    toast('온라인 저장 실패 — ' + (e && e.message ? e.message : '알 수 없는 까닭'));
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '온라인 저장'; }
   }
 }
 

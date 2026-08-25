@@ -2,3 +2,4 @@ node_modules/
 package-lock.json
 shot-*.png
 hm-*.png
+artifact.html

@@ -498,8 +498,15 @@ function runScale(){
   assert(worst <= 1.35, '어떤 값도 한 조에 뭉치지 않는다 (가장 큰 어긋남 '+worst.toFixed(2)+'명, 값 "'+who+'")');
   if(mx!==mn){
     assert(avgFor('1',mx) >= avgFor('1',mn), '1 은 큰 조 쪽에 더 많다 ('+avgFor('1',mx).toFixed(1)+' 대 '+avgFor('1',mn).toFixed(1)+')');
-    assert(avgFor('3',mx) <= avgFor('3',mn) + 0.01, '3 은 작은 조 쪽에 더 많다 ('+avgFor('3',mx).toFixed(1)+' 대 '+avgFor('3',mn).toFixed(1)+')');
   }
+  // 3 급이 어디로 가는지는 두 규칙이 서로 반대로 당긴다:
+  //   기울기는 '유리한 사람은 작은 조로', 도움 규칙은 '불리한 사람이 많은 조에 잘하는 사람도'.
+  //   불리한 사람이 큰 조에 있으니 도움 규칙이 3 급을 큰 조로 부른다.
+  //   약자를 돕는 것이 애초에 기울기를 넣은 이유라 도움 규칙을 이기게 두고, 분포는 알려만 준다.
+  const noHelp = per.filter(r=>(r.c['1']||0) > 0 && (r.c['3']||0) === 0).length;
+  assert(noHelp===0, '1 이 있는데 3 이 하나도 없는 조가 없다 ('+noHelp+'개)');
+  if(mx!==mn) console.log('    3 급 분포: '+mx+'명조 '+avgFor('3',mx).toFixed(1)
+    +' · '+mn+'명조 '+avgFor('3',mn).toFixed(1)+' (도움 규칙이 기울기를 이긴 자리)');
   console.log('    조별 구성: ' + per.map(r=>r.L+'명 '+Object.keys(tot).sort().map(v=>v+(r.c[v]||0)).join('')).join('  '));
 }
 
@@ -617,9 +624,66 @@ function runPin(){
   assert(!h.pin || h.pin[gone]==null, '빠진 사람의 고정은 걷힌다 ('+gone+')');
 }
 
+/* ── 동행은 깍두기 — 더 나은 자리로 ── */
+function runCompanion(){
+  console.log('\n\x1b[1m동행은 더 유리한 자리로\x1b[0m');
+  const rows = [['이름','성별','일행','개발경험']];
+  const party = {2:'A',17:'A',5:'B',20:'B'};          // 동행 4명 (조 6개보다 적어야 기울기가 보인다)
+  const lvl = ['1','2','3','2','3','1','2','3','1','2'];
+  for(let i=0;i<29;i++) rows.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),
+    i<15?'남':'여', party[i]||'', lvl[i%lvl.length]]);
+  C.S = C.blankState();
+  C.takeTable(rows.map(r=>r.join('\t')).join('\n'));
+  const st = C.S;
+  st.sessions = st.sessions.filter(x=>x.name==='해커톤');
+  const h = st.sessions[0]; h.size = 5;
+  C.recompute();
+
+  assert(h.bias['-2:동행']===1, '동행 여부가 유·불리에 자동으로 붙는다');
+  const ci = st.headers.indexOf('개발경험');
+  const isP = (n)=> !!C.PEOPLE[C.PIDX.get(n)].party;
+  const dev = (n)=> C.valOf(C.PEOPLE[C.PIDX.get(n)], ci);
+  const Ls = h.teams.map(g=>g.length), mx = Math.max.apply(null,Ls), mn = Math.min.apply(null,Ls);
+  const mean = (f,L)=>{ const r = h.teams.filter(g=>g.length===L); return r.reduce((a,g)=>a+g.filter(f).length,0)/r.length; };
+  if(mx!==mn) assert(mean(isP,mx) >= mean(isP,mn),
+    '동행은 큰 조 쪽에 더 많다 ('+mx+'명조 '+mean(isP,mx).toFixed(2)+' · '+mn+'명조 '+mean(isP,mn).toFixed(2)+')');
+
+  // 동행이면서 개발 경험도 없는 사람은 도울 사람이 있는 조에 있어야 한다
+  let alone = 0;
+  for(const g of h.teams){
+    const both = g.filter(n=>isP(n) && dev(n)==='1').length;
+    const help = g.filter(n=>dev(n)==='3').length;
+    if(both > 0 && help === 0) alone++;
+  }
+  assert(alone===0, '동행이면서 1급인 사람이 도울 사람 없는 조에 있지 않다 ('+alone+'개 조)');
+
+  // 동행이 한 조에 몰리지 않는다
+  const cnt = h.teams.map(g=>g.filter(isP).length);
+  assert(Math.max.apply(null,cnt) <= 2, '동행이 한 조에 몰리지 않는다 (최대 '+Math.max.apply(null,cnt)+'명)');
+
+  // 도움 모자람이 조마다 고르게 퍼졌나
+  const short = h.teams.map(g=>{
+    const d = g.filter(n=>isP(n) || dev(n)==='1').length, a = g.filter(n=>dev(n)==='3').length;
+    return Math.max(0, d-a);
+  });
+  assert(Math.max.apply(null,short) - Math.min.apply(null,short) <= 2,
+    '도움이 모자란 정도가 조마다 고르다 ('+short.join(',')+')');
+
+  // 일행 열이 없는 명단에서는 조용히 넘어가야 한다
+  const plain = [['이름','성별','개발경험']];
+  for(let i=0;i<20;i++) plain.push([NAMES_B[i], i<10?'남':'여', lvl[i%lvl.length]]);
+  C.S = C.blankState();
+  C.takeTable(plain.map(r=>r.join('\t')).join('\n'));
+  const h2 = C.S.sessions.find(x=>x.name==='해커톤');
+  assert(!h2.bias['-2:동행'], '일행 열이 없으면 동행 규칙을 붙이지 않는다');
+  C.recompute();
+  assert([].concat.apply([], h2.teams).length === C.attendees(h2).length, '그래도 배정은 온전하다');
+}
+
 /* ── 돌리기 ── */
-const N = Math.max(1, parseInt(process.argv[2] || '6', 10));
-console.log('\x1b[1m만남 배분기 검사\x1b[0m  — ' + N + '판\n' + '─'.repeat(52));
+/* 판 수를 0 으로 주면 무작위 판을 건너뛰고 시나리오만 돌린다 — 고치는 동안 빠르게 본다 */
+const N = Math.max(0, parseInt(process.argv[2] == null ? '6' : process.argv[2], 10) || 0);
+console.log('\x1b[1m만남 배분기 검사\x1b[0m  — ' + (N ? N+'판' : '시나리오만') + '\n' + '─'.repeat(52));
 
 const plans = [
   { label:'30명 · 세션 4개 · 5인조',      nF:12, nM:18, nParty:3, sessions:4, sizes:[5],       absent:0, dropped:0, fixRoom:true },
@@ -643,10 +707,11 @@ runBias();
 runScale();
 runRooms();
 runPin();
+runCompanion();
 
 console.log('\n' + '─'.repeat(52));
-const slow = Math.max.apply(null, times);
-console.log('가장 오래 걸린 판: ' + Math.round(slow) + 'ms'
+const slow = times.length ? Math.max.apply(null, times) : 0;
+if(times.length) console.log('가장 오래 걸린 판: ' + Math.round(slow) + 'ms'
   + '  \x1b[2m(vm 샌드박스라 실제보다 대여섯 배 느립니다 — 진짜 값은 browser-check.js)\x1b[0m');
 if(fails){ console.log('\x1b[31m' + fails + '군데 틀렸습니다\x1b[0m' + (warns?' · 눈여겨볼 것 '+warns+'개':'')); process.exit(1); }
 console.log('\x1b[32m다 지켜졌습니다\x1b[0m' + (warns?' · 눈여겨볼 것 '+warns+'개':''));

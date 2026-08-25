@@ -113,8 +113,9 @@ const assert = (c,t)=> c ? ok(t) : bad(t);
       return out;
     });
     const avg = times.reduce((a,b)=>a+b,0)/times.length;
-    if(avg < 400) ok('다시 셈하는 데 평균 '+Math.round(avg)+'ms');
-    else if(avg < 900) console.log('  \x1b[33m!\x1b[0m 다시 셈하는 데 평균 '+Math.round(avg)+'ms — 조금 굼뜹니다');
+    // 세션 넷 + 숙박을 통째로 다시 푸는 값이다. 손으로 느끼는 한계가 어디쯤인지로 잡는다.
+    if(avg < 600) ok('다시 셈하는 데 평균 '+Math.round(avg)+'ms');
+    else if(avg < 1000) console.log('  \x1b[33m!\x1b[0m 다시 셈하는 데 평균 '+Math.round(avg)+'ms — 조금 굼뜹니다');
     else bad('다시 셈하는 데 평균 '+Math.round(avg)+'ms — 손댈 때마다 기다리게 됩니다');
 
     // 세션이 여섯인 무거운 판

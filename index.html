@@ -478,7 +478,7 @@ const BIAS_W = 20, BIAS_TILT = 2;
    1 이 둘인데 3 이 하나도 없는 조가 나올 수 있고, 그 조의 1 은
    큰 조에 갔다는 것 말고는 아무 도움을 못 받는다.
    불리한 사람이 있는 조에는 유리한 사람이 적어도 하나 있어야 한다. */
-const HELP_PEN = 60;
+const HELP_PEN = 45;
 /* 방은 둘뿐이라 한 번 잘못 묶으면 밤새 그대로다.
    이미 만난 사이도, 같은 소속·설계팀도 사실상 금지로 둔다. */
 const GUARD_PEN = 800, ROOM_MEET = 400;
@@ -561,7 +561,13 @@ function buildPeople(){
     PIDX.set(nm, PEOPLE.length-1);
   }
 }
-const valOf = (p, ci)=>{ const v=(p.vals[ci]||'').trim(); return v===''? '—' : v; };
+/* 동행 여부는 열에 적혀 있는 값이 아니라 파생된 것이다.
+   가상의 열 번호를 하나 주면 값처럼 다뤄져서 분산·기울기·도움 규칙이 그대로 먹는다. */
+const PARTY_CI = -2;
+const valOf = (p, ci)=>{
+  if(ci === PARTY_CI) return p.party ? '동행' : '본인';
+  const v=(p.vals[ci]||'').trim(); return v===''? '—' : v;
+};
 const attrCols = ()=> S.roles.map((r,i)=>r==='attr'?i:-1).filter(i=>i>=0);
 const activeNames = ()=> PEOPLE.filter(p=>!S.out[p.name]).map(p=>p.name);
 
@@ -628,19 +634,20 @@ function buildCtx(names, meet, N, opt){
   // 1 만 흩어지고 2 와 3 이 뭉쳐 버린다. 부호 0 은 그냥 비례 몫이다.
   const biasCols = new Set();
   for(const k of bkeys) biasCols.add(+k.slice(0, k.indexOf(':')));
-  const biasVals = [];
+  const biasGroups = [];
+  const dis = new Int32Array(n);
+  let disTot = 0;
   for(const ci of biasCols){
-    const seen = new Map();
+    const idOf = new Map(), vals = [];
+    const vidx = new Int32Array(n);
     for(let i=0;i<n;i++){
       const v = valOf(PEOPLE[PIDX.get(names[i])], ci);
-      if(!seen.has(v)) seen.set(v, []);
-      seen.get(v).push(i);
+      if(!idOf.has(v)){ idOf.set(v, vals.length); vals.push({ val:v, tot:0, ci, sign:(opt.bias||{})[ci+':'+v] || 0 }); }
+      const k = idOf.get(v);
+      vidx[i] = k; vals[k].tot++;
     }
-    for(const [val, idxs] of seen){
-      const mem = new Int32Array(n);
-      for(const i of idxs) mem[i] = 1;
-      biasVals.push({ mem, tot: idxs.length, ci, val, sign: (opt.bias||{})[ci+':'+val] || 0 });
-    }
+    for(let i=0;i<n;i++) if(vals[vidx[i]].sign > 0){ dis[i]++; disTot++; }
+    biasGroups.push({ vidx, vals, buf: new Array(vals.length).fill(0) });
   }
   const attrs = [];
   for(const spec of (opt.attrs||[])){
@@ -681,13 +688,14 @@ function buildCtx(names, meet, N, opt){
       if(t != null && t >= 0 && t < K) pinTeam[i] = t;
     });
   }
-  return { n, M, party, attrs, seats, bias, biasVals, avgL, guards, pairW, pinTeam, wMeet: opt.wMeet,
+  return { n, M, party, attrs, seats, bias, biasGroups, dis, disTot, avgL, guards, pairW, pinTeam, wMeet: opt.wMeet,
            // 조 크기를 유·불리로 정하기로 했으면 기회 균등은 그 세션에서 물러선다.
            // 둘 다 조 크기를 밀어대면 서로 상쇄한다.
            wFair: opt.wFair !== undefined ? opt.wFair : (hasBias ? 0 : 0.5),
            wBias: hasBias ? BIAS_W : 0,
-           helpPen: (hasBias && biasVals.some(b=>b.sign<0 && b.tot>0)
-                             && biasVals.some(b=>b.sign>0 && b.tot>0)) ? HELP_PEN : 0,
+           helpPen: (hasBias
+             && biasGroups.some(g=>g.vals.some(v=>v.sign<0 && v.tot>0))
+             && biasGroups.some(g=>g.vals.some(v=>v.sign>0 && v.tot>0))) ? HELP_PEN : 0,
            partyPen: opt.noParty===false ? 0 : PARTY_PEN };
 }
 function teamCost(ctx, mem){
@@ -702,18 +710,31 @@ function teamCost(ctx, mem){
     // 어느 부호든 가중치의 합은 n 이라 목표의 합은 언제나 tot 이다.
     const d = L - ctx.avgL;
     let nDis = 0, nAdv = 0;
-    for(let k=0;k<ctx.biasVals.length;k++){
-      const bv = ctx.biasVals[k];
-      let g = 0;
-      for(let a=0;a<L;a++) g += bv.mem[mem[a]];
-      let tgt = bv.tot * (L + bv.sign * BIAS_TILT * d) / n;
-      if(tgt < 0) tgt = 0; else if(tgt > L) tgt = L;
-      const t = g - tgt;
-      c += ctx.wBias * t * t;                  // 이차라 한 조에 몰리지도 않는다
-      if(bv.sign > 0) nDis += g; else if(bv.sign < 0) nAdv += g;
+    for(let k=0;k<ctx.biasGroups.length;k++){
+      const bg = ctx.biasGroups[k], cnt = bg.buf, V = bg.vals.length;
+      for(let v=0;v<V;v++) cnt[v] = 0;
+      for(let a=0;a<L;a++) cnt[bg.vidx[mem[a]]]++;     // 열마다 한 번만 훑는다
+      for(let v=0;v<V;v++){
+        const bv = bg.vals[v], g = cnt[v];
+        let tgt = bv.tot * (L + bv.sign * BIAS_TILT * d) / n;
+        if(tgt < 0) tgt = 0; else if(tgt > L) tgt = L;
+        const t = g - tgt;
+        c += ctx.wBias * t * t;                // 이차라 한 조에 몰리지도 않는다
+        if(bv.sign > 0) nDis += g; else if(bv.sign < 0) nAdv += g;
+      }
     }
-    // 도울 사람 없이 불리한 사람만 모인 조를 막는다
-    if(ctx.helpPen && nDis > 0 && nAdv === 0) c += ctx.helpPen;
+    // 한 사람이 여러 가지로 불리하면 그만큼 더 쳐준다 (동행이면서 개발 경험도 없다면)
+    if(ctx.disTot){
+      let g = 0;
+      for(let a=0;a<L;a++) g += ctx.dis[mem[a]];
+      let tgt = ctx.disTot * (L + BIAS_TILT * d) / n;
+      if(tgt < 0) tgt = 0;
+      const t = g - tgt;
+      c += ctx.wBias * t * t;
+    }
+    // 불리한 사람 수만큼 도울 사람이 있어야 한다. 모자란 만큼 값을 친다 —
+    // '유리한 팀'은 조가 큰 것만이 아니라 잘하는 사람이 많은 것이기도 하다.
+    if(ctx.helpPen && nDis > nAdv) c += ctx.helpPen * (nDis - nAdv);
   }
   for(let a=0;a<L;a++){
     const i = mem[a];
@@ -1369,6 +1390,8 @@ function autoDefaults(){
     // 해커톤은 조 크기로도 메운다 — 없음·미수료가 손이 많은 조로 간다
     if(hack && !s.bias){
       const b = {};
+      // 남의 동행으로 온 사람은 깍두기다. 더 나은 자리로 보낸다
+      if(S.roles.indexOf('party') >= 0) b[PARTY_CI + ':동행'] = 1;
       S.headers.forEach((h,ci)=>{
         if(S.roles[ci]!=='attr') return;
         if(!RE_DEV.test(h) && !RE_EDU.test(h)) return;
@@ -1403,7 +1426,7 @@ function pruneBias(){
     let live = 0;
     for(const k in s.bias){
       const q = k.indexOf(':'), ci = +k.slice(0,q), val = k.slice(q+1);
-      const okCol = S.roles[ci] === 'attr';
+      const okCol = ci === PARTY_CI ? (S.roles.indexOf('party') >= 0) : (S.roles[ci] === 'attr');
       const okVal = okCol && colValues(ci).indexOf(val) >= 0;
       if(!okVal) delete s.bias[k]; else live++;
     }

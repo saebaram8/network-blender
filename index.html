@@ -530,6 +530,14 @@ const GUARD_PEN = 800, ROOM_MEET = 400;
    사람이 직접 말한 희망이 우리가 넣은 어림짐작에 밀리면 안 된다.
    성별과 '같은 방 안 됨' 은 여전히 이긴다. */
 const AVOID_PEN = 3000, PREFER_BONUS = 1500;
+/* 한 방에 동행인 둘은 안 된다. 따라온 사람끼리 밤을 보내면 워크샵에서 얻을 것이
+   가장 많은 두 사람이 서로만 보고 끝난다. 진행자가 정한 규칙이라 사람이 고른
+   '되도록 같은 방'(1500)보다 세게 둔다 — 일행 규칙(2000)과 같은 층이다. */
+const GUEST_ROOM_PEN = 2000;
+/* 동행인은 **모든 세션에서** 고르게 흩어져야 한다. 미수료자가 한 조에 몰리면
+   그 조만 헤매고 다른 조는 배울 사람이 없다. 열이 아니라 파생된 값이라
+   조건 목록에 뜨지 않으니 사람이 켤 수가 없다 — 늘 켜 두고 `필수`(20)와 같은 무게로 둔다. */
+const GUEST_SPREAD_W = 20;
 
 let S = blankState();
 function blankState(){
@@ -540,7 +548,7 @@ function blankState(){
     out: {},                 // 아예 안 오는 사람
     genderCol: -1,
     sessions: [],
-    rooms: { fixed: [], odd: 'single', allowParty: false, absent: {}, count: true, seed: 7, list: null, guardNames: [], avoid: [], prefer: [], labels: {} },
+    rooms: { fixed: [], odd: 'single', allowParty: false, allowGuestPair: false, absent: {}, count: true, seed: 7, list: null, guardNames: [], avoid: [], prefer: [], labels: {} },
     seedBase: 20250814
   };
 }
@@ -694,6 +702,7 @@ function buildCtx(names, meet, N, opt){
     M[a*n+b]=v; M[b*n+a]=v;
   }
   const party = names.map(nm=> PEOPLE[PIDX.get(nm)].party || '');
+  const guest = names.map(nm=> !!PEOPLE[PIDX.get(nm)].guest);
   // 같은 값이면 한 방에 두지 않을 열들 (소속·설계팀 같은 것)
   const guards = (opt.guards || []).map(ci=>{
     const idOf = new Map();
@@ -797,7 +806,8 @@ function buildCtx(names, meet, N, opt){
     });
   }
   const nT = Math.max(1, opt.nTeams || 1);
-  return { n, M, party, attrs, seats, bias, biasGroups, dis, disTot, avgL, guards, pairW, pinTeam,
+  return { n, M, party, guest, guestPen: opt.guestPen || 0,
+           attrs, seats, bias, biasGroups, dis, disTot, avgL, guards, pairW, pinTeam,
            pw, pwTarget: pw ? pwTot / nT : 0, wMeet: opt.wMeet,
            // 조 크기를 유·불리로 정하기로 했으면 기회 균등은 그 세션에서 물러선다.
            // 둘 다 조 크기를 밀어대면 서로 상쇄한다.
@@ -860,6 +870,7 @@ function teamCost(ctx, mem){
       const m = ctx.M[i*n+j];
       if(m) c += ctx.wMeet * m * m;
       if(ctx.partyPen && ctx.party[i] && ctx.party[i]===ctx.party[j]) c += ctx.partyPen;
+      if(ctx.guestPen && ctx.guest[i] && ctx.guest[j]) c += ctx.guestPen;
       for(let k=0;k<ctx.guards.length;k++){
         const gv = ctx.guards[k];
         if(gv[i] >= 0 && gv[i] === gv[j]) c += GUARD_PEN;
@@ -940,6 +951,11 @@ function sessCtxOpts(sess, names){
     if(!cfg || !cfg.level) continue;
     specs.push({ ci, w: LV_W[cfg.level], mode: cfg.mode || 'spread' });
   }
+  /* 동행으로 따라온 사람은 어느 세션에서든 고르게 흩어진다.
+     해커톤처럼 이 값에 유·불리를 정한 세션에서는 buildCtx 가 이 몫을 걷어내고
+     기울인 목표에 넘긴다 — 둘이 같이 당기면 기울기가 묻힌다. */
+  if(S.roles.indexOf('party') >= 0)
+    specs.push({ ci: PARTY_CI, w: GUEST_SPREAD_W, mode:'spread' });
   return { attrs: specs, wMeet: MEET_W[sess.meet], bias: sess.bias || null,
            rank: sess.rank || null, pin: sess.pin || null,
            nTeams: teamSizes(names.length, sess).length };
@@ -1117,7 +1133,8 @@ function computeRooms(){
     // 방은 모두 2인실이라 기회를 따질 것이 없다 — 안 만난 사이인지만 본다
     const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:ROOM_MEET, wFair:0, flatMeet:true, nTeams: sizes.length,
                                             guards: roomGuards(), pairs: roomPairs(),
-                                            noParty: R.allowParty ? false : true });
+                                            noParty: R.allowParty ? false : true,
+                                            guestPen: R.allowGuestPair ? 0 : GUEST_ROOM_PEN });
     const best = solve(ctx, sizes, (R.seed|0) + gi*31337, 9);
     for(const grp of best.teams) out.push({ who: grp.map(i=>names[i]), fixed:false, gender:g });
   }
@@ -1195,6 +1212,20 @@ function diagnose(){
       if(worst > 1.25) d.violations.push(s.name + ' — ' + worstTeam + '조에 ' + mk.val
         + ' 인 사람이 몰렸습니다 (몫보다 ' + worst.toFixed(1) + '명 많음)');
     }
+    // 동행인이 한 조에 몰렸나 — 유·불리를 정한 세션은 위 biasMarks 가 이미 본다
+    if(S.roles.indexOf('party') >= 0 && !(s.bias && s.bias[PARTY_CI+':동행'])){
+      const gTot = names.filter(n=>{ const p=PEOPLE[PIDX.get(n)]; return p && p.guest; }).length;
+      if(gTot){
+        let worst = 0, wt = 0;
+        s.teams.forEach((g,i)=>{
+          const has = g.filter(n=>{ const p=PEOPLE[PIDX.get(n)]; return p && p.guest; }).length;
+          const dev = has - gTot * g.length / Math.max(1, names.length);
+          if(dev > worst){ worst = dev; wt = i+1; }
+        });
+        if(worst > 1.25) d.violations.push(s.name + ' — ' + wt
+          + '조에 동행인이 몰렸습니다 (몫보다 ' + worst.toFixed(1) + '명 많음)');
+      }
+    }
     for(const ci of attrCols()){
       const cfg = s.attrs[ci];
       const lvl = cfg ? cfg.level : 0;
@@ -1254,6 +1285,13 @@ function diagnose(){
         if(vs.length>1 && new Set(vs).size===1)
           d.violations.push('숙박 — ' + r.who.join(', ') + ' 방이 ' + S.headers[ci] + ' 가 같습니다 (' + vs[0] + ')');
       }
+    }
+    // 한 방에 동행인 둘
+    if(!R.allowGuestPair) for(const r of R.list){
+      if(r.fixed) continue;
+      const gs = r.who.filter(n=>{ const p = PEOPLE[PIDX.get(n)]; return p && p.guest; });
+      if(gs.length > 1)
+        d.violations.push('숙박 — ' + r.who.join(', ') + ' 방이 둘 다 동행인입니다');
     }
     // 사람이 고른 짝
     for(const grp of (R.avoid||[])){
@@ -1358,7 +1396,8 @@ function renderRoster(){
         const gN = PEOPLE.filter(q=>!S.out[q.name] && q.guest).length;
         h += '<span class="pill ok">'+sz.length+'묶음 · '+sz.reduce((a,b)=>a+b,0)+'명</span>'
           +  '<span class="note">가장 큰 묶음 '+big+'명 — 이 사람들끼리는 같은 조에 넣지 않습니다 · '
-          +  '핸디캡으로 세는 동행인은 '+gN+'명입니다(데려온 분은 빼고)</span>'
+          +  '핸디캡으로 세는 동행인은 '+gN+'명입니다(데려온 분은 빼고) — '
+          +  '모든 세션에서 고르게 흩어지고, 한 방에 둘이 들지 않습니다</span>'
           +  '</div><div class="row" style="margin-top:4px"><span class="lbl"></span><div class="who">'
           +  list.map(a=>'<span class="mini" style="cursor:default">'+esc(sortNames(a).join(' · '))+'</span>').join('');
       }
@@ -1954,6 +1993,7 @@ function renderRooms(){
     +   '<option value="triple"'+(R.odd==='triple'?' selected':'')+'>3인실 하나</option>'
     + '</select>'
     + '<label class="note" style="cursor:pointer"><input type="checkbox" id="r-party"'+(R.allowParty?' checked':'')+'> 일행끼리 같은 방도 괜찮음</label>'
+    + '<label class="note" style="cursor:pointer"><input type="checkbox" id="r-guest"'+(R.allowGuestPair?' checked':'')+'> 동행인 둘이 한 방도 괜찮음</label>'
     + '<label class="note" style="cursor:pointer"><input type="checkbox" id="r-count"'+(R.count?' checked':'')+'> 같은 방도 만남으로 셈함</label>'
     + '<span class="sp" style="flex:1"></span><button class="btn sm" id="r-reroll">다시 섞기</button>'
     + '</div></div>';
@@ -2033,6 +2073,7 @@ function renderRooms(){
 
   $('r-odd').onchange = (e)=> act(()=>{ R.odd = e.target.value; });
   $('r-party').onchange = (e)=> act(()=>{ R.allowParty = e.target.checked; });
+  $('r-guest').onchange = (e)=> act(()=>{ R.allowGuestPair = e.target.checked; });
   $('r-count').onchange = (e)=> act(()=>{ R.count = e.target.checked; });
   $('r-reroll').onclick = ()=> act(()=>{ R.seed = Math.floor(Math.random()*1e6); });
   b.querySelectorAll('[data-rlab]').forEach(el=>{

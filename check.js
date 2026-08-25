@@ -899,6 +899,31 @@ function runGuestCount(){
   const cnt = (hack.teams||[]).map(g=> g.filter(n=> isGuest(n)).length);
   assert(Math.max.apply(null,cnt) <= 1,
     '해커톤에서 한 조에 동행인이 둘 이상 몰리지 않는다 ('+cnt.join('/')+')');
+
+  // 해커톤만이 아니다 — 모든 세션에서 고르게 흩어져야 한다
+  const spread = st.sessions.map(x=>
+    (x.teams||[]).map(g=> g.filter(n=>isGuest(n)).length));
+  const clumped = st.sessions.filter((x,i)=> Math.max.apply(null, spread[i]) > 1)
+                             .map(x=>x.name);
+  assert(clumped.length === 0, '어느 세션에서도 한 조에 동행인이 둘 이상 없다 ('
+    + st.sessions.map((x,i)=>x.name+' '+spread[i].join('')).join(' · ') + ')');
+
+  // 방은 둘뿐이라 동행인끼리 묶이면 밤새 그대로다
+  const rooms = st.rooms.list || [];
+  const bothGuest = rooms.filter(r=> !r.fixed
+    && r.who.filter(n=>isGuest(n)).length > 1);
+  assert(bothGuest.length === 0, '한 방에 동행인 둘이 없다 ('
+    + (bothGuest.map(r=>r.who.join('+')).join(' ') || '0방') + ')');
+  assert(rooms.length > 0, '방이 짜였다 ('+rooms.length+'방)');
+
+  // 괜찮다고 켜면 규칙이 풀린다 — 진단도 그때는 말하지 않는다
+  st.rooms.allowGuestPair = true;
+  C.recompute();
+  const dg = C.diagnose();
+  assert((dg.violations||[]).every(v=>v.indexOf('둘 다 동행인')<0),
+    '괜찮다고 켜면 진단이 그 말을 하지 않는다');
+  st.rooms.allowGuestPair = false;
+  C.recompute();
 }
 
 /* ── 돌리기 ── */

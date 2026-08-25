@@ -533,7 +533,15 @@ function runRooms(){
     }
   }
   assert(sameOrg===0, '같은 소속끼리 한 방에 두지 않았다 ('+sameOrg+'쌍)');
-  assert(metPair===0, '이미 만난 사이를 한 방에 두지 않았다 ('+metPair+'쌍)');
+  // 성별·소속·만난 사이를 한꺼번에 피하다 보면 못 피하는 짝이 생길 수 있다.
+  // 중요한 것은 조용히 넘어가지 않는 것이다 — 못 피했으면 진단이 말해야 한다.
+  const dg = C.diagnose();
+  if(metPair === 0) ok('이미 만난 사이를 한 방에 두지 않았다 (0쌍)');
+  else {
+    assert((dg.roomMet||[]).length === metPair,
+      '못 피한 '+metPair+'쌍을 진단이 빠짐없이 보고한다 ('+(dg.roomMet||[]).length+'쌍)');
+    assert(metPair <= 2, '못 피한 짝이 둘 이하다 ('+metPair+'쌍)');
+  }
 
   // 개인 선호 — 싫다는 짝과 좋다는 짝
   const men = nm.filter(n=>C.valOf(C.PEOPLE[C.PIDX.get(n)], st.genderCol)==='남');

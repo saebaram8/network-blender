@@ -227,6 +227,10 @@ select.pick{background:var(--raise); border:1px solid var(--line2); border-radiu
 }
 .team li .who-b:hover{border-bottom-color:var(--line2)}
 .team li .who-b.pinned{color:var(--gold); font-weight:600; border-bottom-color:var(--gold-line)}
+.team li .who-b.dragging{opacity:.4}
+.team[data-drop]{transition:box-shadow .12s, background .12s}
+.team.over{box-shadow:0 0 0 2px var(--accent); background:var(--accent-soft)}
+@media print{ .team.over{box-shadow:none; background:var(--surface)} }
 @media print{ .team li .who-b{border-bottom:none} }
 .team li .mk{font-family:var(--mono); font-size:10.5px; padding:0 4px; border-radius:3px; letter-spacing:.02em}
 .mk.a{background:var(--accent-soft); color:var(--accent)}
@@ -565,12 +569,16 @@ function buildPeople(){
 /* 동행 여부는 열에 적혀 있는 값이 아니라 파생된 것이다.
    가상의 열 번호를 하나 주면 값처럼 다뤄져서 분산·기울기·도움 규칙이 그대로 먹는다. */
 const PARTY_CI = -2;
+/* 이름은 늘 가나다 순으로 보여준다 — 서른 명 중에서 눈으로 찾아야 하므로.
+   속의 차례(못 박은 자리)는 건드리지 않고 그릴 때만 정렬한다. */
+const byName = (a,b)=> String(a).localeCompare(String(b), 'ko');
+const sortNames = (arr)=> arr.slice().sort(byName);
 const valOf = (p, ci)=>{
   if(ci === PARTY_CI) return p.party ? '동행' : '본인';
   const v=(p.vals[ci]||'').trim(); return v===''? '—' : v;
 };
 const attrCols = ()=> S.roles.map((r,i)=>r==='attr'?i:-1).filter(i=>i>=0);
-const activeNames = ()=> PEOPLE.filter(p=>!S.out[p.name]).map(p=>p.name);
+const activeNames = ()=> PEOPLE.filter(p=>!S.out[p.name]).map(p=>p.name).sort(byName);
 
 /* ═══ 세션 ═══ */
 let sidSeq = 1;
@@ -983,7 +991,7 @@ function computeRooms(){
     const ctx = buildCtx(names, MEET, NP, { attrs:[], wMeet:ROOM_MEET, wFair:0, nTeams: sizes.length,
                                             guards: roomGuards(), pairs: roomPairs(),
                                             noParty: R.allowParty ? false : true });
-    const best = solve(ctx, sizes, (R.seed|0) + gi*31337, 6);
+    const best = solve(ctx, sizes, (R.seed|0) + gi*31337, 9);
     for(const grp of best.teams) out.push({ who: grp.map(i=>names[i]), fixed:false, gender:g });
   }
   R.list = out;
@@ -1235,7 +1243,8 @@ function renderRoster(){
     h += '<div class="card pad" style="margin-top:14px">'
       +  '<div class="lbl" style="margin-bottom:8px">참가자 <span class="note noprint">— 이름을 누르면 워크샵 전체에서 빠집니다</span></div>'
       +  '<div class="chips">'
-      +  PEOPLE.map(p=>'<button class="chip'+(S.out[p.name]?' off':'')+'" data-out="'+esc(p.name)+'">'
+      +  PEOPLE.slice().sort((a,b)=>byName(a.name,b.name))
+           .map(p=>'<button class="chip'+(S.out[p.name]?' off':'')+'" data-out="'+esc(p.name)+'">'
       +     esc(p.name) + (p.party?'<span class="pt">'+esc(p.party)+'</span>':'') + '</button>').join('')
       +  '</div></div>';
   }
@@ -1650,17 +1659,18 @@ function renderResult(){
       +  '</div><div class="teams">';
     const marks = biasMarks(s);
     s.teams.forEach((g,i)=>{
-      h += '<div class="team"><h4><span>'+(i+1)+'조</span><span class="cnt">'+g.length+'명</span></h4>'
+      h += '<div class="team" data-drop="'+si+':'+i+'"><h4><span>'+(i+1)+'조</span><span class="cnt">'+g.length+'명</span></h4>'
         // 불리하다고 표시한 값이 조마다 몇인지 드러낸다 — 몰렸으면 여기서 보인다
         +  (marks.length ? '<div class="bmark">'
              + marks.map(m=>'<i>'+(m.sign>0?'▲':'▼')+'</i>'+esc(m.val)
                  +' <b>'+countVal(g, m.ci, m.val)+'</b>').join(' · ')
              + '</div>' : '')
         +  '<ul>'
-        +  g.map(n=>{
+        +  sortNames(g).map(n=>{
              const pinned = s.pin && s.pin[n] != null;
-             return '<li><button class="who-b'+(pinned?' pinned':'')+'" data-pin="'+si+':'+i+':'+esc(n)+'"'
-                  + ' title="'+(pinned?'누르면 고정을 풉니다':'누르면 이 조에 고정합니다')+'">'
+             return '<li><button class="who-b'+(pinned?' pinned':'')+'" draggable="true"'
+                  + ' data-pin="'+si+':'+i+':'+esc(n)+'"'
+                  + ' title="'+(pinned?'누르면 고정이 풀립니다 · 끌어서 다른 조로':'누르면 이 조에 고정 · 끌어서 다른 조로')+'">'
                   + (pinned?'📌':'') + esc(n) + '</button>' + markFor(n,hi) + '</li>';
            }).join('')
         +  '</ul></div>';
@@ -1679,8 +1689,54 @@ function renderResult(){
       if(!Object.keys(s.pin).length) delete s.pin;
     });
   });
+  wireDrag(b);
   b.querySelectorAll('[data-unpinall]').forEach(el=>{
     el.onclick = ()=> act(()=>{ delete S.sessions[+el.dataset.unpinall].pin; });
+  });
+}
+
+/* 이름을 끌어 다른 조에 떨어뜨린다. 떨어뜨리면 그 조에 못 박는다 —
+   그러지 않으면 다음 셈에서 도로 흩어져 손댄 보람이 없다. */
+let DRAG = null;
+function wireDrag(b){
+  b.querySelectorAll('[data-pin]').forEach(el=>{
+    el.ondragstart = (e)=>{
+      DRAG = el.dataset.pin;
+      try{ e.dataTransfer.setData('text/plain', DRAG); e.dataTransfer.effectAllowed = 'move'; }catch(err){}
+      el.classList.add('dragging');
+    };
+    el.ondragend = ()=>{ DRAG = null; el.classList.remove('dragging'); b.querySelectorAll('.over').forEach(x=>x.classList.remove('over')); };
+  });
+  b.querySelectorAll('[data-drop]').forEach(el=>{
+    el.ondragover = (e)=>{
+      if(!DRAG) return;
+      const [dsi] = DRAG.split(':');
+      if(el.dataset.drop.split(':')[0] !== dsi) return;    // 다른 세션으로는 못 옮긴다
+      e.preventDefault();
+      try{ e.dataTransfer.dropEffect = 'move'; }catch(err){}
+      el.classList.add('over');
+    };
+    el.ondragleave = ()=> el.classList.remove('over');
+    el.ondrop = (e)=>{
+      e.preventDefault();
+      el.classList.remove('over');
+      const src = DRAG || (e.dataTransfer && e.dataTransfer.getData('text/plain'));
+      DRAG = null;
+      if(!src) return;
+      const i1 = src.indexOf(':'), i2 = src.indexOf(':', i1+1);
+      const si = +src.slice(0,i1), from = +src.slice(i1+1,i2), nm = src.slice(i2+1);
+      const [tsi, tto] = el.dataset.drop.split(':').map(Number);
+      if(tsi !== si || tto === from) return;
+      const s = S.sessions[si];
+      const sizes = teamSizes(attendees(s).length, s);
+      const pinnedThere = Object.keys(s.pin||{}).filter(k=>s.pin[k]===tto).length;
+      if(pinnedThere >= sizes[tto]){
+        toast((tto+1)+'조는 이미 '+pinnedThere+'명이 고정돼 자리가 없습니다');
+        return;
+      }
+      act(()=>{ if(!s.pin) s.pin = {}; s.pin[nm] = tto; });
+      toast(nm + ' 을 ' + (tto+1) + '조에 고정했습니다');
+    };
   });
 }
 
@@ -1766,7 +1822,7 @@ function renderRooms(){
           +  '<input class="rlab" value="'+esc(roomLabel(r.idx))+'" data-rlab="'+r.idx+'" aria-label="방 번호">'
           +  '<span class="cnt">'
           +  (r.who.length===2?'2인실':(r.who.length===1?'1인실':r.who.length+'인실'))+'</span></h4><ul>'
-          +  r.who.map(n=>'<li><span>'+esc(n)+'</span>'
+          +  sortNames(r.who).map(n=>'<li><span>'+esc(n)+'</span>'
           +    (S.genderCol>=0 ? markFor(n, S.genderCol) : '')+'</li>').join('')
           +  '</ul></div>';
       }
@@ -1986,12 +2042,12 @@ function resultTSV(){
     if(!s.teams || !s.teams.length) continue;
     out.push('');
     out.push(s.name);
-    s.teams.forEach((g,i)=> out.push((i+1)+'조\t'+g.length+'명\t'+g.join(', ')));
+    s.teams.forEach((g,i)=> out.push((i+1)+'조\t'+g.length+'명\t'+sortNames(g).join(', ')));
   }
   if(S.rooms.list && S.rooms.list.length){
     out.push('');
     out.push('숙박');
-    S.rooms.list.forEach((r,i)=> out.push(roomLabel(i)+'\t'+r.who.length+'명\t'+r.who.join(', ')));
+    S.rooms.list.forEach((r,i)=> out.push(roomLabel(i)+'\t'+r.who.length+'명\t'+sortNames(r.who).join(', ')));
   }
   return out.join('\n');
 }

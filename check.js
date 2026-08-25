@@ -746,6 +746,55 @@ function runPower(){
     '가중치를 바꿔도 다시 고르게 맞춘다 ('+ps2.map(x=>Math.round(x*10)/10).join(' · ')+')');
 }
 
+/* ── 일행 칸에 '함께 온 사람 이름' 을 적은 시트 ── */
+function runPartyByName(){
+  console.log('\n\x1b[1m일행 칸에 이름을 적어도 이어진다\x1b[0m');
+  const link = {16:'도윤', 20:'지호', 24:'준우', 27:'건우'};   // 그 사람 칸은 비어 있다
+  const rows = [['이름','성별','일행','개발경험']];
+  for(let i=0;i<29;i++) rows.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),
+    i<15?'남':'여', link[i]||'', ['1','2','3','O','?','X'][i%6]]);
+  C.S = C.blankState();
+  C.takeTable(rows.map(r=>r.join('\t')).join('\n'));
+  const st = C.S;
+
+  const grp = new Map();
+  for(const p of C.PEOPLE){ if(!p.party) continue; if(!grp.has(p.party)) grp.set(p.party,[]); grp.get(p.party).push(p.name); }
+  const pairs = [...grp.values()].filter(a=>a.length>1);
+  assert(pairs.length === 4, '이름으로 적은 넷이 모두 묶였다 ('+pairs.map(a=>a.join('+')).join(' ')+')');
+
+  st.sessions.forEach(s=>s.size = 5);
+  C.recompute();
+  let bad = 0;
+  for(const s of st.sessions) for(const g of (s.teams||[])){
+    for(let a=0;a<g.length;a++) for(let b=a+1;b<g.length;b++){
+      const pa = C.PEOPLE[C.PIDX.get(g[a])], pb = C.PEOPLE[C.PIDX.get(g[b])];
+      if(pa.party && pa.party === pb.party) bad++;
+    }
+  }
+  assert(bad === 0, '네 세션 통틀어 같은 조에 든 일행이 없다 ('+bad+'쌍)');
+
+  // 지목당한 사람이 이미 다른 묶음에 있으면 그쪽으로 들어간다
+  const rows2 = [['이름','성별','일행']];
+  rows2.push(['가','남','팀A']); rows2.push(['나','남','팀A']);
+  rows2.push(['다','남','가']);                            // 가 를 지목 → 팀A 로
+  for(let i=0;i<9;i++) rows2.push([NAMES_B[i],'남','']);
+  C.S = C.blankState();
+  C.takeTable(rows2.map(r=>r.join('\t')).join('\n'));
+  const p = (n)=> C.PEOPLE[C.PIDX.get(n)].party;
+  assert(p('가') === p('나') && p('나') === p('다'), '지목한 사람이 이미 묶음에 있으면 그 묶음에 든다 ('+p('다')+')');
+
+  // X = 0.5, ? = 가운데
+  const rows3 = [['이름','성별','개발경험']];
+  const pool = ['1','2','3','O','?','X'];
+  for(let i=0;i<24;i++) rows3.push([NAMES_B[i%NAMES_B.length]+(i>=NAMES_B.length?'2':''),'남',pool[i%pool.length]]);
+  C.S = C.blankState();
+  C.takeTable(rows3.map(r=>r.join('\t')).join('\n'));
+  const rk = C.S.sessions.find(x=>x.name==='해커톤').rank[C.S.headers.indexOf('개발경험')];
+  assert(rk['X'] === 0.5, 'X 는 0.5 다 ('+rk['X']+')');
+  assert(rk['3'] > rk['O'] && rk['O'] > rk['2'] && rk['2'] === rk['?'] && rk['?'] > rk['1'] && rk['1'] > rk['X'],
+    '3 > O > 2 = ? > 1 > X ('+pool.map(v=>v+':'+rk[v]).join(' ')+')');
+}
+
 /* ── 돌리기 ── */
 /* 판 수를 0 으로 주면 무작위 판을 건너뛰고 시나리오만 돌린다 — 고치는 동안 빠르게 본다 */
 const N = Math.max(0, parseInt(process.argv[2] == null ? '6' : process.argv[2], 10) || 0);
@@ -775,6 +824,7 @@ runRooms();
 runPin();
 runCompanion();
 runPower();
+runPartyByName();
 
 console.log('\n' + '─'.repeat(52));
 const slow = times.length ? Math.max.apply(null, times) : 0;

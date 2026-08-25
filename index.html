@@ -514,11 +514,11 @@ function defaultRank(vals){
   const mid = sorted[Math.floor(sorted.length/2)];
   const r = {};
   for(const v of vals){
-    if(NUMV.test(v)) r[v] = Number(v);
-    else {
-      const g = biasGuess(v);
-      r[v] = g < 0 ? hi - 0.5 : (g > 0 ? mid : (hi+lo)/2);
-    }
+    if(NUMV.test(v)){ r[v] = Number(v); continue; }
+    // '?' 는 모른다는 뜻이라 가운데로 둔다. 'X' 처럼 없다고 못박은 값은 제일 아래다.
+    if(/^[?？]+$/.test(v)){ r[v] = mid; continue; }
+    const g = biasGuess(v);
+    r[v] = g < 0 ? hi - 0.5 : (g > 0 ? Math.max(0, lo - 0.5) : (hi+lo)/2);
   }
   return r;
 }
@@ -603,6 +603,7 @@ function buildPeople(){
     PEOPLE.push({ name:nm, party, vals:row.slice() });
     PIDX.set(nm, PEOPLE.length-1);
   }
+  linkPartiesByName();
 }
 /* 동행 여부는 열에 적혀 있는 값이 아니라 파생된 것이다.
    가상의 열 번호를 하나 주면 값처럼 다뤄져서 분산·기울기·도움 규칙이 그대로 먹는다. */
@@ -611,6 +612,20 @@ const PARTY_CI = -2;
    속의 차례(못 박은 자리)는 건드리지 않고 그릴 때만 정렬한다. */
 const byName = (a,b)=> String(a).localeCompare(String(b), 'ko');
 const sortNames = (arr)=> arr.slice().sort(byName);
+/* 일행 칸에 **동행할 사람 이름**을 적는 시트가 많다. 그 사람 칸은 비어 있으니
+   값이 같지 않아 남남으로 보이고, 둘이 같은 조에 들어가 버린다.
+   이름으로 적힌 것은 그 사람과 한 묶음으로 잇는다. */
+function linkPartiesByName(){
+  const byNm = new Map();
+  for(const p of PEOPLE) byNm.set(p.name, p);
+  for(const p of PEOPLE){
+    if(!p.party) continue;
+    const host = byNm.get(p.party);
+    if(!host || host === p) continue;
+    if(host.party) p.party = host.party;            // 그 사람이 이미 묶음에 있으면 거기로
+    else { const key = '·' + host.name; host.party = key; p.party = key; }
+  }
+}
 const valOf = (p, ci)=>{
   if(ci === PARTY_CI) return p.party ? '동행' : '본인';
   const v=(p.vals[ci]||'').trim(); return v===''? '—' : v;
@@ -1304,8 +1319,17 @@ function renderRoster(){
           +  (solo?' (혼자뿐인 값 '+solo+'개)':'')+'</span>';
       } else {
         const big = Math.max.apply(null, sz);
+        const who = new Map();
+        for(const p of PEOPLE){
+          if(S.out[p.name] || !p.party) continue;
+          if(!who.has(p.party)) who.set(p.party, []);
+          who.get(p.party).push(p.name);
+        }
+        const list = Array.from(who.values()).filter(a=>a.length>1);
         h += '<span class="pill ok">'+sz.length+'묶음 · '+sz.reduce((a,b)=>a+b,0)+'명</span>'
-          +  '<span class="note">가장 큰 묶음 '+big+'명 · '+esc(S.headers[pc])+' 열 기준</span>';
+          +  '<span class="note">가장 큰 묶음 '+big+'명 — 이 사람들끼리는 같은 조에 넣지 않습니다</span>'
+          +  '</div><div class="row" style="margin-top:4px"><span class="lbl"></span><div class="who">'
+          +  list.map(a=>'<span class="mini" style="cursor:default">'+esc(sortNames(a).join(' · '))+'</span>').join('');
       }
     }
     h += '</div>';

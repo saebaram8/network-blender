@@ -2018,7 +2018,7 @@ function resultTSV(){
      방이 강제로 묶인 것인지도 드러내지 않는다. */
   const roomOf = new Map();
   if(S.rooms.list) S.rooms.list.forEach((r,i)=> r.who.forEach(n=> roomOf.set(n, roomLabel(i))));
-  const live = PEOPLE.filter(p=>!S.out[p.name]);
+  const live = PEOPLE.filter(p=>!S.out[p.name]).sort((a,b)=>byName(a.name,b.name));
   const out = [];
 
   // ① 사람마다 어디로 가나

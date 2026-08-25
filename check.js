@@ -303,6 +303,16 @@ function runTSV(){
   const w = top[0].split('\t').length;
   assert(top.every(l=>l.split('\t').length===w), '첫 덩이의 칸 수가 고르다');
   assert(top[0].split('\t')[0]==='이름' && top[0].indexOf('숙박')>=0, '이름과 숙박 열이 있다');
+  // 두 덩이 다 가나다 순이어야 한다 — 위쪽 이름표가 정렬 안 돼 있던 적이 있다
+  const who = top.slice(1).map(l=>l.split('\t')[0]);
+  assert(who.every((v,i)=>i===0 || who[i-1].localeCompare(v,'ko') <= 0),
+    '사람마다 어디로 가나 — 이름이 가나다 순이다 ('+who.slice(0,4).join(' ')+' …)');
+  const teamLine = lines.find(l=>/^1조\t/.test(l));
+  if(teamLine){
+    const mem = teamLine.split('\t')[2].split(', ');
+    assert(mem.every((v,i)=>i===0 || mem[i-1].localeCompare(v,'ko') <= 0),
+      '세션마다 누가 모이나 — 이름이 가나다 순이다 ('+mem.join(' ')+')');
+  }
   // 속내는 안 나온다
   for(const h of ['일행','성별','소속','개발경험','사전교육'])
     assert(top[0].indexOf(h)<0, '"'+h+'" 은 내보내지 않는다');
